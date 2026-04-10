@@ -1,0 +1,50 @@
+name: open_gtfs_planner
+description: A Flutter implementation of Open GTFS Planner - visualize and simulate GTFS public transit data.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.22.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Database
+  sqflite: ^2.3.3
+  sqflite_common_ffi: ^2.3.3
+  sqflite_common_ffi_web: ^0.4.5+1
+
+  # Maps
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+
+  # State management
+  flutter_riverpod: ^2.5.1
+
+  # Navigation
+  go_router: ^14.2.7
+
+  # File handling
+  file_picker: ^8.1.2
+  archive: ^3.6.1
+  path_provider: ^2.1.4
+  path: ^1.9.0
+
+  # CSV parsing
+  csv: ^6.0.0
+
+  # UI
+  google_fonts: ^6.2.1
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
