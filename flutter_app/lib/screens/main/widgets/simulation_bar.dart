@@ -1,3 +1,5 @@
+import 'dart:ui' show FontFeature;
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';

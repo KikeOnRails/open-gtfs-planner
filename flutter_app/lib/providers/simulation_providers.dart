@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/gtfs_models.dart';
-import '../database/gtfs_repository.dart';
+import '../core/database/gtfs_repository.dart';
 import 'project_providers.dart';
 
 // ---------------------------------------------------------------------------

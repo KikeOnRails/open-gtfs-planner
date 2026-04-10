@@ -2,7 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/project_model.dart';
 import '../../models/gtfs_models.dart';
-import '../database/gtfs_repository.dart';
+import '../core/database/gtfs_repository.dart';
 
 // ---------------------------------------------------------------------------
 // Projects
