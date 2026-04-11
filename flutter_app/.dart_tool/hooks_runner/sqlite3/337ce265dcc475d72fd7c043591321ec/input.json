@@ -1,0 +1,12 @@
+{
+  "assets": {},
+  "config": {
+    "build_asset_types": [],
+    "linking_enabled": false
+  },
+  "out_dir_shared": "/home/enrique/proyectos-dart/open-gtfs-planner/flutter_app/.dart_tool/hooks_runner/shared/sqlite3/build/",
+  "out_file": "/home/enrique/proyectos-dart/open-gtfs-planner/flutter_app/.dart_tool/hooks_runner/sqlite3/337ce265dcc475d72fd7c043591321ec/output.json",
+  "package_name": "sqlite3",
+  "package_root": "/home/enrique/.pub-cache/hosted/pub.dev/sqlite3-3.3.0/",
+  "user_defines": {}
+}

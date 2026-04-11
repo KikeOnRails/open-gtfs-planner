@@ -15,6 +15,7 @@ dependencies:
   sqflite: ^2.3.3
   sqflite_common_ffi: ^2.3.3
   sqflite_common_ffi_web: ^0.4.5+1
+  sqlite3: 2.4.6
 
   # Maps
   flutter_map: ^7.0.2
