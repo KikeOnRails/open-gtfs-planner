@@ -19,6 +19,96 @@ typedef ImportProgressCallback = void Function(String step, double progress);
 /// Content map: filename (without .txt) -> CSV string content
 typedef GtfsContent = Map<String, String>;
 
+/// Data class to hold all parsed GTFS data for passing between isolates
+class _ParsedGtfsData {
+  final List<Map<String, dynamic>> agencies;
+  final List<Map<String, dynamic>> stops;
+  final List<Map<String, dynamic>> routes;
+  final List<Map<String, dynamic>> trips;
+  final List<Map<String, dynamic>> stopTimes;
+  final List<Map<String, dynamic>> shapes;
+  final List<Map<String, dynamic>> calendar;
+  final List<Map<String, dynamic>> calendarDates;
+
+  _ParsedGtfsData({
+    required this.agencies,
+    required this.stops,
+    required this.routes,
+    required this.trips,
+    required this.stopTimes,
+    required this.shapes,
+    required this.calendar,
+    required this.calendarDates,
+  });
+}
+
+/// Parse all CSV content in an isolate (runs on separate thread)
+_ParsedGtfsData _parseAllContentInIsolate(GtfsContent content) {
+  return _ParsedGtfsData(
+    agencies: _parseContentStatic(content, 'agency'),
+    stops: _parseContentStatic(content, 'stops'),
+    routes: _parseContentStatic(content, 'routes'),
+    trips: _parseContentStatic(content, 'trips'),
+    stopTimes: _parseContentStatic(content, 'stop_times'),
+    shapes: _parseContentStatic(content, 'shapes'),
+    calendar: _parseContentStatic(content, 'calendar'),
+    calendarDates: _parseContentStatic(content, 'calendar_dates'),
+  );
+}
+
+/// Static version of _parseContent for use in isolate
+List<Map<String, dynamic>> _parseContentStatic(
+    GtfsContent content, String key) {
+  final csv = content[key];
+  if (csv == null || csv.isEmpty) return [];
+
+  try {
+    final rows = const CsvToListConverter(
+      eol: '\n',
+      shouldParseNumbers: false,
+    ).convert(csv);
+
+    if (rows.isEmpty) return [];
+
+    final headers = rows.first
+        .map((h) =>
+            h.toString().trim().replaceAll('\uFEFF', '').replaceAll('\r', ''))
+        .toList();
+
+    return rows.skip(1).where((row) => row.isNotEmpty).map((row) {
+      final map = <String, dynamic>{};
+      for (var i = 0; i < headers.length; i++) {
+        map[headers[i]] = i < row.length ? row[i].toString().trim() : null;
+      }
+      return map;
+    }).toList();
+  } catch (e) {
+    debugPrint('Error parsing GTFS $key: $e');
+    return [];
+  }
+}
+
+/// Extract ZIP content (can run in isolate for large files)
+GtfsContent _extractZipInIsolate(Uint8List bytes) {
+  final archive = ZipDecoder().decodeBytes(bytes);
+  final content = <String, String>{};
+
+  for (final file in archive) {
+    if (file.isFile && file.name.toLowerCase().endsWith('.txt')) {
+      final baseName =
+          file.name.split('/').last.replaceAll('.txt', '').toLowerCase();
+      try {
+        final fileBytes = file.content as Uint8List;
+        content[baseName] = String.fromCharCodes(fileBytes);
+      } catch (e) {
+        // Skip problematic files
+      }
+    }
+  }
+
+  return content;
+}
+
 class GtfsImporter {
   final ImportProgressCallback? onProgress;
 
@@ -33,7 +123,10 @@ class GtfsImporter {
   Future<GtfsFileModel> importFromZipBytes(
       int projectId, String filename, Uint8List bytes) async {
     _notify('Extrayendo ZIP...', 0.05);
-    final content = _extractZipToContent(bytes);
+
+    // Extract ZIP in isolate to avoid blocking UI
+    final content = await compute(_extractZipInIsolate, bytes);
+
     return _importContent(projectId, filename, filename, content);
   }
 
@@ -59,26 +152,6 @@ class GtfsImporter {
     return parts.last.isNotEmpty ? parts.last : parts[parts.length - 2];
   }
 
-  GtfsContent _extractZipToContent(Uint8List bytes) {
-    final archive = ZipDecoder().decodeBytes(bytes);
-    final content = <String, String>{};
-
-    for (final file in archive) {
-      if (file.isFile && file.name.toLowerCase().endsWith('.txt')) {
-        // Handle paths like "gtfs/stops.txt" -> "stops"
-        final baseName = file.name.split('/').last.replaceAll('.txt', '').toLowerCase();
-        try {
-          final fileBytes = file.content as Uint8List;
-          content[baseName] = String.fromCharCodes(fileBytes);
-        } catch (e) {
-          debugPrint('Error reading ${file.name} from zip: $e');
-        }
-      }
-    }
-
-    return content;
-  }
-
   Future<GtfsFileModel> _importContent(
     int projectId,
     String filename,
@@ -88,26 +161,21 @@ class GtfsImporter {
     final gtfsFile =
         await GtfsRepository.createGtfsFile(projectId, filename, sourcePath);
 
-    _notify('Leyendo archivos GTFS...', 0.10);
+    _notify('Parseando archivos CSV...', 0.10);
 
-    final agencyData = _parseContent(content, 'agency');
-    final stopsData = _parseContent(content, 'stops');
-    final routesData = _parseContent(content, 'routes');
-    final tripsData = _parseContent(content, 'trips');
-    final stopTimesData = _parseContent(content, 'stop_times');
-    final shapesData = _parseContent(content, 'shapes');
-    final calendarData = _parseContent(content, 'calendar');
-    final calendarDatesData = _parseContent(content, 'calendar_dates');
+    // Parse all CSV data in a separate isolate (heavy operation)
+    final parsed = await compute(_parseAllContentInIsolate, content);
 
     final db = await AppDatabase.instance;
 
     _notify('Importando agencias...', 0.15);
     final agencyMap = <String, int>{};
-    for (final agency in agencyData) {
+    for (final agency in parsed.agencies) {
       final dbId = await db.insert('gtfs_agencies', {
         'gtfs_file_id': gtfsFile.id,
         'agency_id': agency['agency_id'],
-        'agency_name': agency['agency_name'] ?? agency['agency_id'] ?? 'Unknown',
+        'agency_name':
+            agency['agency_name'] ?? agency['agency_id'] ?? 'Unknown',
         'agency_url': agency['agency_url'],
         'agency_timezone': agency['agency_timezone'],
       });
@@ -128,15 +196,17 @@ class GtfsImporter {
 
     _notify('Importando paradas...', 0.20);
     final stopMap = <String, int>{};
-    await _importInChunks(db, stopsData, 500, (chunk) async {
+    await _importInChunks(db, parsed.stops, 300, (chunk) async {
       final batch = db.batch();
       for (final row in chunk) {
         batch.insert('gtfs_stops', {
           'gtfs_file_id': gtfsFile.id,
           'stop_id': row['stop_id'] ?? '',
           'stop_name': row['stop_name'],
-          'stop_lat': double.tryParse(row['stop_lat']?.toString() ?? '0') ?? 0.0,
-          'stop_lon': double.tryParse(row['stop_lon']?.toString() ?? '0') ?? 0.0,
+          'stop_lat':
+              double.tryParse(row['stop_lat']?.toString() ?? '0') ?? 0.0,
+          'stop_lon':
+              double.tryParse(row['stop_lon']?.toString() ?? '0') ?? 0.0,
           'stop_code': row['stop_code'],
           'stop_desc': row['stop_desc'],
         });
@@ -152,7 +222,7 @@ class GtfsImporter {
 
     _notify('Importando rutas...', 0.35);
     final routeMap = <String, int>{};
-    await _importInChunks(db, routesData, 500, (chunk) async {
+    await _importInChunks(db, parsed.routes, 300, (chunk) async {
       final batch = db.batch();
       for (final row in chunk) {
         final agencyId = row['agency_id']?.toString();
@@ -181,12 +251,12 @@ class GtfsImporter {
     });
 
     _notify('Importando calendario...', 0.45);
-    await GtfsRepository.bulkInsertCalendar(db, gtfsFile.id, calendarData);
-    await GtfsRepository.bulkInsertCalendarDates(db, gtfsFile.id, calendarDatesData);
+    await _importCalendarInChunks(db, gtfsFile.id, parsed.calendar);
+    await _importCalendarDatesInChunks(db, gtfsFile.id, parsed.calendarDates);
 
     _notify('Importando viajes (trips)...', 0.50);
     final tripMap = <String, int>{};
-    await _importInChunks(db, tripsData, 1000, (chunk) async {
+    await _importInChunks(db, parsed.trips, 500, (chunk) async {
       final batch = db.batch();
       final validChunk = <Map<String, dynamic>>[];
       for (final row in chunk) {
@@ -214,10 +284,10 @@ class GtfsImporter {
     });
 
     _notify('Importando shapes...', 0.70);
-    await GtfsRepository.bulkInsertShapes(db, gtfsFile.id, shapesData);
+    await _importShapesInChunks(db, gtfsFile.id, parsed.shapes);
 
     _notify('Importando horarios (stop_times)...', 0.75);
-    await _importInChunks(db, stopTimesData, 1000, (chunk) async {
+    await _importInChunks(db, parsed.stopTimes, 500, (chunk) async {
       final batch = db.batch();
       for (final row in chunk) {
         final tripDbId = tripMap[row['trip_id']?.toString()];
@@ -243,6 +313,7 @@ class GtfsImporter {
     return gtfsFile;
   }
 
+  /// Import data in smaller chunks with UI yield between each
   Future<void> _importInChunks(
     Database db,
     List<Map<String, dynamic>> rows,
@@ -252,36 +323,92 @@ class GtfsImporter {
     for (var i = 0; i < rows.length; i += chunkSize) {
       final end = (i + chunkSize).clamp(0, rows.length);
       await handler(rows.sublist(i, end));
+      // Critical: yield to UI after each chunk
+      await Future.delayed(const Duration(milliseconds: 1));
     }
   }
 
-  List<Map<String, dynamic>> _parseContent(GtfsContent content, String key) {
-    final csv = content[key];
-    if (csv == null || csv.isEmpty) return [];
+  /// Import calendar data in chunks
+  Future<void> _importCalendarInChunks(
+    Database db,
+    int gtfsFileId,
+    List<Map<String, dynamic>> data,
+  ) async {
+    const chunkSize = 300;
+    for (var i = 0; i < data.length; i += chunkSize) {
+      final end = (i + chunkSize).clamp(0, data.length);
+      final chunk = data.sublist(i, end);
+      final batch = db.batch();
+      for (final row in chunk) {
+        batch.insert('gtfs_calendar', {
+          'gtfs_file_id': gtfsFileId,
+          'service_id': row['service_id'] ?? '',
+          'monday': int.tryParse(row['monday']?.toString() ?? '0') ?? 0,
+          'tuesday': int.tryParse(row['tuesday']?.toString() ?? '0') ?? 0,
+          'wednesday': int.tryParse(row['wednesday']?.toString() ?? '0') ?? 0,
+          'thursday': int.tryParse(row['thursday']?.toString() ?? '0') ?? 0,
+          'friday': int.tryParse(row['friday']?.toString() ?? '0') ?? 0,
+          'saturday': int.tryParse(row['saturday']?.toString() ?? '0') ?? 0,
+          'sunday': int.tryParse(row['sunday']?.toString() ?? '0') ?? 0,
+          'start_date': row['start_date'] ?? '',
+          'end_date': row['end_date'] ?? '',
+        });
+      }
+      await batch.commit(noResult: true);
+      await Future.delayed(const Duration(milliseconds: 1));
+    }
+  }
 
-    try {
-      final rows = const CsvToListConverter(
-        eol: '\n',
-        shouldParseNumbers: false,
-      ).convert(csv);
+  /// Import calendar dates in chunks
+  Future<void> _importCalendarDatesInChunks(
+    Database db,
+    int gtfsFileId,
+    List<Map<String, dynamic>> data,
+  ) async {
+    const chunkSize = 300;
+    for (var i = 0; i < data.length; i += chunkSize) {
+      final end = (i + chunkSize).clamp(0, data.length);
+      final chunk = data.sublist(i, end);
+      final batch = db.batch();
+      for (final row in chunk) {
+        batch.insert('gtfs_calendar_dates', {
+          'gtfs_file_id': gtfsFileId,
+          'service_id': row['service_id'] ?? '',
+          'date': row['date'] ?? '',
+          'exception_type':
+              int.tryParse(row['exception_type']?.toString() ?? '1') ?? 1,
+        });
+      }
+      await batch.commit(noResult: true);
+      await Future.delayed(const Duration(milliseconds: 1));
+    }
+  }
 
-      if (rows.isEmpty) return [];
-
-      final headers = rows.first
-          .map((h) => h.toString().trim().replaceAll('\uFEFF', '').replaceAll('\r', ''))
-          .toList();
-
-      return rows.skip(1).where((row) => row.isNotEmpty).map((row) {
-        final map = <String, dynamic>{};
-        for (var i = 0; i < headers.length; i++) {
-          map[headers[i]] =
-              i < row.length ? row[i].toString().trim() : null;
-        }
-        return map;
-      }).toList();
-    } catch (e) {
-      debugPrint('Error parsing GTFS $key: $e');
-      return [];
+  /// Import shapes in chunks
+  Future<void> _importShapesInChunks(
+    Database db,
+    int gtfsFileId,
+    List<Map<String, dynamic>> data,
+  ) async {
+    const chunkSize = 500;
+    for (var i = 0; i < data.length; i += chunkSize) {
+      final end = (i + chunkSize).clamp(0, data.length);
+      final chunk = data.sublist(i, end);
+      final batch = db.batch();
+      for (final row in chunk) {
+        batch.insert('gtfs_shapes', {
+          'gtfs_file_id': gtfsFileId,
+          'shape_id': row['shape_id'] ?? '',
+          'shape_pt_lat':
+              double.tryParse(row['shape_pt_lat']?.toString() ?? '0') ?? 0.0,
+          'shape_pt_lon':
+              double.tryParse(row['shape_pt_lon']?.toString() ?? '0') ?? 0.0,
+          'shape_pt_sequence':
+              int.tryParse(row['shape_pt_sequence']?.toString() ?? '0') ?? 0,
+        });
+      }
+      await batch.commit(noResult: true);
+      await Future.delayed(const Duration(milliseconds: 1));
     }
   }
 }

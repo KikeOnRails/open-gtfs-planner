@@ -8,7 +8,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../../../core/utils/gtfs_importer.dart';
 import '../../../models/gtfs_models.dart';
 import '../../../providers/project_providers.dart';
 import '../../../providers/simulation_providers.dart';
@@ -22,13 +21,13 @@ class LayersPanel extends ConsumerStatefulWidget {
 }
 
 class _LayersPanelState extends ConsumerState<LayersPanel> {
-  bool _importing = false;
-  double _importProgress = 0.0;
-  String _importStep = '';
-
   @override
   Widget build(BuildContext context) {
     final gtfsFilesAsync = ref.watch(gtfsFilesProvider);
+    final importTasks = ref.watch(importTasksProvider);
+    final activeImports = importTasks.values
+        .where((t) => !t.isComplete || t.error != null)
+        .toList();
 
     return Container(
       decoration: const BoxDecoration(
@@ -40,14 +39,15 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
       child: Column(
         children: [
           _buildPanelHeader(context),
-          if (_importing) _buildImportProgress(),
+          // Show all active imports
+          ...activeImports.map((task) => _buildImportProgress(task)),
           Expanded(
             child: gtfsFilesAsync.when(
               loading: () => const Center(
                 child: CircularProgressIndicator(color: AppTheme.primary),
               ),
               error: (e, _) => Center(child: Text('Error: $e')),
-              data: (files) => files.isEmpty
+              data: (files) => files.isEmpty && activeImports.isEmpty
                   ? _buildEmptyLayers()
                   : _buildLayersList(files),
             ),
@@ -58,6 +58,9 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
   }
 
   Widget _buildPanelHeader(BuildContext context) {
+    final importTasks = ref.watch(importTasksProvider);
+    final hasActiveImports = importTasks.values.any((t) => !t.isComplete);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: const BoxDecoration(
@@ -74,10 +77,20 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
             style: Theme.of(context).textTheme.titleSmall,
           ),
           const Spacer(),
+          if (hasActiveImports)
+            Container(
+              margin: const EdgeInsets.only(right: 8),
+              width: 14,
+              height: 14,
+              child: const CircularProgressIndicator(
+                strokeWidth: 2,
+                color: AppTheme.primary,
+              ),
+            ),
           Tooltip(
             message: 'Importar GTFS',
             child: InkWell(
-              onTap: _importing ? null : _importGtfs,
+              onTap: _importGtfs,
               borderRadius: BorderRadius.circular(8),
               child: Container(
                 padding: const EdgeInsets.all(6),
@@ -94,50 +107,80 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
     );
   }
 
-  Widget _buildImportProgress() {
+  Widget _buildImportProgress(ImportTask task) {
+    final isError = task.error != null;
+    final color = isError ? Colors.red : AppTheme.primary;
+
     return Container(
       margin: const EdgeInsets.all(12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppTheme.primary.withOpacity(0.1),
+        color: color.withOpacity(0.1),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.primary.withOpacity(0.3)),
+        border: Border.all(color: color.withOpacity(0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: AppTheme.primary,
-                ),
-              ),
+              if (!task.isComplete)
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: color,
+                  ),
+                )
+              else if (isError)
+                Icon(Icons.error_outline, color: color, size: 14)
+              else
+                Icon(Icons.check_circle_outline, color: color, size: 14),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  _importStep,
-                  style: const TextStyle(
-                      color: AppTheme.primary, fontSize: 12),
+                  task.filename,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (isError)
+                IconButton(
+                  icon: const Icon(Icons.close, size: 14),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () {
+                    ref
+                        .read(importTasksProvider.notifier)
+                        .removeImport(task.id);
+                  },
+                ),
             ],
           ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: _importProgress,
-              backgroundColor: AppTheme.primary.withOpacity(0.2),
-              valueColor:
-                  const AlwaysStoppedAnimation<Color>(AppTheme.primary),
-              minHeight: 4,
-            ),
+          const SizedBox(height: 4),
+          Text(
+            isError ? 'Error: ${task.error}' : task.step,
+            style: TextStyle(color: color.withOpacity(0.8), fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 2,
           ),
+          if (!isError) ...[
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: task.progress,
+                backgroundColor: color.withOpacity(0.2),
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+                minHeight: 4,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -169,12 +212,11 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
           ),
           const SizedBox(height: 16),
           OutlinedButton.icon(
-            onPressed: _importing ? null : _importGtfs,
+            onPressed: _importGtfs,
             icon: const Icon(Icons.add, size: 16),
             label: const Text('Importar GTFS'),
             style: OutlinedButton.styleFrom(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
           ),
         ],
@@ -194,7 +236,7 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
     final project = ref.read(currentProjectProvider);
     if (project == null) return;
 
-    // Pick a zip file or folder
+    // Pick a zip file or folder - do this BEFORE starting background import
     if (kIsWeb) {
       // Web: pick zip file only (bytes mode)
       final result = await FilePicker.platform.pickFiles(
@@ -206,14 +248,16 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
       if (result == null || result.files.isEmpty) return;
       final bytes = result.files.first.bytes;
       if (bytes == null) return;
-      await _runImportFromBytes(
-          project.id, result.files.first.name, bytes);
+
+      // Start import in background - don't await
+      _runImportFromBytes(project.id, result.files.first.name, bytes);
     } else {
       // Desktop: pick zip or folder
       final zipResult = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['zip'],
-        dialogTitle: 'Selecciona archivo GTFS (.zip) o cancela para elegir carpeta',
+        dialogTitle:
+            'Selecciona archivo GTFS (.zip) o cancela para elegir carpeta',
       );
 
       String? path;
@@ -227,63 +271,34 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
       }
 
       if (path == null) return;
-      await _runImport(project.id, path);
+
+      // Start import in background - don't await
+      _runImport(project.id, path);
     }
   }
 
   Future<void> _runImport(int projectId, String path) async {
-    setState(() {
-      _importing = true;
-      _importProgress = 0;
-      _importStep = 'Iniciando importación...';
-    });
-
     try {
-      final importer = GtfsImporter(
-        onProgress: (step, progress) {
-          setState(() {
-            _importStep = step;
-            _importProgress = progress;
-          });
-        },
-      );
-      await importer.import(projectId, path);
+      await ref.read(gtfsImportProvider).importFromPath(projectId, path);
       _afterImport();
     } catch (e) {
       _showImportError(e);
-    } finally {
-      if (mounted) setState(() => _importing = false);
     }
   }
 
   Future<void> _runImportFromBytes(
       int projectId, String filename, Uint8List bytes) async {
-    setState(() {
-      _importing = true;
-      _importProgress = 0;
-      _importStep = 'Iniciando importación...';
-    });
-
     try {
-      final importer = GtfsImporter(
-        onProgress: (step, progress) {
-          setState(() {
-            _importStep = step;
-            _importProgress = progress;
-          });
-        },
-      );
-      await importer.importFromZipBytes(projectId, filename, bytes);
+      await ref
+          .read(gtfsImportProvider)
+          .importFromBytes(projectId, filename, bytes);
       _afterImport();
     } catch (e) {
       _showImportError(e);
-    } finally {
-      if (mounted) setState(() => _importing = false);
     }
   }
 
   void _afterImport() {
-    ref.invalidate(gtfsFilesProvider);
     ref.invalidate(activeServicesProvider);
     ref.invalidate(activeTripsProvider);
   }
@@ -331,8 +346,7 @@ class _GtfsFileLayerState extends ConsumerState<_GtfsFileLayer> {
         InkWell(
           onTap: () => setState(() => _expanded = !_expanded),
           child: Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(
               children: [
                 Icon(
@@ -371,9 +385,7 @@ class _GtfsFileLayerState extends ConsumerState<_GtfsFileLayer> {
                 _SmallIconButton(
                   icon: Icons.place_outlined,
                   active: showStops,
-                  tooltip: showStops
-                      ? 'Ocultar paradas'
-                      : 'Mostrar paradas',
+                  tooltip: showStops ? 'Ocultar paradas' : 'Mostrar paradas',
                   onTap: () => ref
                       .read(gtfsStopsVisibilityProvider.notifier)
                       .set(widget.gtfsFile.id, !showStops),
@@ -469,9 +481,8 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
       loading: () => const SizedBox.shrink(),
       error: (e, _) => const SizedBox.shrink(),
       data: (allRoutes) {
-        final agencyRoutes = allRoutes
-            .where((r) => r.agencyDbId == widget.agency.id)
-            .toList();
+        final agencyRoutes =
+            allRoutes.where((r) => r.agencyDbId == widget.agency.id).toList();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -484,9 +495,7 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
                 child: Row(
                   children: [
                     Icon(
-                      _expanded
-                          ? Icons.expand_less
-                          : Icons.expand_more,
+                      _expanded ? Icons.expand_less : Icons.expand_more,
                       size: 14,
                       color: AppTheme.onSurfaceVariant,
                     ),
@@ -587,9 +596,7 @@ class _RouteLayer extends ConsumerWidget {
           _SmallIconButton(
             icon: Icons.directions_bus_outlined,
             active: showSim,
-            tooltip: showSim
-                ? 'Ocultar simulación'
-                : 'Activar simulación',
+            tooltip: showSim ? 'Ocultar simulación' : 'Activar simulación',
             onTap: () {
               ref
                   .read(routeSimulationVisibilityProvider.notifier)
@@ -605,34 +612,34 @@ class _RouteLayer extends ConsumerWidget {
 
   Future<void> _centerMapOnRoute(WidgetRef ref) async {
     final mapController = ref.read(mapControllerProvider);
-    
+
     // Get shapes for this route
     final shapes = await GtfsRepository.getShapesByRoute(
       gtfsFile.id,
       route.id,
     );
-    
+
     if (shapes.isEmpty) return;
-    
+
     // Calculate bounds
     double minLat = shapes.first.shapePtLat;
     double maxLat = shapes.first.shapePtLat;
     double minLon = shapes.first.shapePtLon;
     double maxLon = shapes.first.shapePtLon;
-    
+
     for (final shape in shapes) {
       if (shape.shapePtLat < minLat) minLat = shape.shapePtLat;
       if (shape.shapePtLat > maxLat) maxLat = shape.shapePtLat;
       if (shape.shapePtLon < minLon) minLon = shape.shapePtLon;
       if (shape.shapePtLon > maxLon) maxLon = shape.shapePtLon;
     }
-    
+
     // Fit bounds with padding
     final bounds = LatLngBounds(
       LatLng(minLat, minLon),
       LatLng(maxLat, maxLon),
     );
-    
+
     mapController.fitCamera(
       CameraFit.bounds(
         bounds: bounds,
@@ -669,7 +676,9 @@ class _SmallIconButton extends StatelessWidget {
           child: Icon(
             icon,
             size: 14,
-            color: active ? activeColor : AppTheme.onSurfaceVariant.withOpacity(0.4),
+            color: active
+                ? activeColor
+                : AppTheme.onSurfaceVariant.withOpacity(0.4),
           ),
         ),
       ),
