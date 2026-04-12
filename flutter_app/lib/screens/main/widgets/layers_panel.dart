@@ -3,13 +3,16 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/gtfs_importer.dart';
 import '../../../models/gtfs_models.dart';
 import '../../../providers/project_providers.dart';
 import '../../../providers/simulation_providers.dart';
+import '../../../core/database/gtfs_repository.dart';
 
 class LayersPanel extends ConsumerStatefulWidget {
   const LayersPanel({super.key});
@@ -552,13 +555,20 @@ class _RouteLayer extends ConsumerWidget {
           ),
           const SizedBox(width: 6),
           Expanded(
-            child: Text(
-              route.displayName,
-              style: const TextStyle(
-                fontSize: 11,
-                color: AppTheme.onSurface,
+            child: InkWell(
+              onTap: () => _centerMapOnRoute(ref),
+              borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+                child: Text(
+                  route.displayName,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.onSurface,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              overflow: TextOverflow.ellipsis,
             ),
           ),
           // Shape visibility
@@ -589,6 +599,44 @@ class _RouteLayer extends ConsumerWidget {
             },
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _centerMapOnRoute(WidgetRef ref) async {
+    final mapController = ref.read(mapControllerProvider);
+    
+    // Get shapes for this route
+    final shapes = await GtfsRepository.getShapesByRoute(
+      gtfsFile.id,
+      route.id,
+    );
+    
+    if (shapes.isEmpty) return;
+    
+    // Calculate bounds
+    double minLat = shapes.first.shapePtLat;
+    double maxLat = shapes.first.shapePtLat;
+    double minLon = shapes.first.shapePtLon;
+    double maxLon = shapes.first.shapePtLon;
+    
+    for (final shape in shapes) {
+      if (shape.shapePtLat < minLat) minLat = shape.shapePtLat;
+      if (shape.shapePtLat > maxLat) maxLat = shape.shapePtLat;
+      if (shape.shapePtLon < minLon) minLon = shape.shapePtLon;
+      if (shape.shapePtLon > maxLon) maxLon = shape.shapePtLon;
+    }
+    
+    // Fit bounds with padding
+    final bounds = LatLngBounds(
+      LatLng(minLat, minLon),
+      LatLng(maxLat, maxLon),
+    );
+    
+    mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: bounds,
+        padding: const EdgeInsets.all(50),
       ),
     );
   }

@@ -94,9 +94,11 @@ class _TripsTab extends ConsumerWidget {
       ),
       error: (e, _) => Center(child: Text('Error: $e')),
       data: (trips) {
-        final visibleTrips = simVis.isEmpty
-            ? trips
-            : trips.where((t) => simVis[t.routeDbId] == true).toList();
+        // Filtrar por visibilidad de ruta Y por tiempo activo
+        final visibleTrips = trips.where((t) {
+          if (simVis.isNotEmpty && simVis[t.routeDbId] != true) return false;
+          return t.isActiveAt(simTime.dateTime);
+        }).toList();
 
         if (visibleTrips.isEmpty) {
           return Padding(

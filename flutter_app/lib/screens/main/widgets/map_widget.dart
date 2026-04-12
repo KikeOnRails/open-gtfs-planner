@@ -18,11 +18,17 @@ class MapWidget extends ConsumerStatefulWidget {
 }
 
 class _MapWidgetState extends ConsumerState<MapWidget> {
-  final MapController _mapController = MapController();
+  late MapController _mapController;
   // Cache for shapes: gtfsFileId -> shape_id -> List<LatLng>
   final Map<int, Map<String, List<LatLng>>> _shapesCache = {};
   // Cache for stops per file
   final Map<int, List<StopModel>> _stopsCache = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _mapController = ref.read(mapControllerProvider);
+  }
 
   @override
   Widget build(BuildContext context) {

@@ -330,9 +330,40 @@ class GtfsRepository {
     return grouped;
   }
 
-  // -------------------------------------------------------------------------
+  // Get all shape_ids used by a specific route
+  static Future<List<String>> getShapeIdsByRoute(int routeDbId) async {
+    final db = await _db;
+    final rows = await db.rawQuery('''
+      SELECT DISTINCT shape_id 
+      FROM gtfs_trips 
+      WHERE route_db_id = ? AND shape_id IS NOT NULL
+    ''', [routeDbId]);
+    return rows
+        .map((row) => row['shape_id'] as String?)
+        .where((id) => id != null)
+        .cast<String>()
+        .toList();
+  }
+
+  // Get all shapes for a specific route
+  static Future<List<ShapeModel>> getShapesByRoute(int gtfsFileId, int routeDbId) async {
+    final shapeIds = await getShapeIdsByRoute(routeDbId);
+    if (shapeIds.isEmpty) return [];
+    
+    final db = await _db;
+    final placeholders = shapeIds.map((_) => '?').join(',');
+    final rows = await db.rawQuery('''
+      SELECT * FROM gtfs_shapes 
+      WHERE gtfs_file_id = ? AND shape_id IN ($placeholders)
+      ORDER BY shape_id, shape_pt_sequence ASC
+    ''', [gtfsFileId, ...shapeIds]);
+    
+    return rows.map(ShapeModel.fromMap).toList();
+  }
+
+  // ---------------------------------------------------------------------------
   // Calendar
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   static Future<List<CalendarModel>> getCalendar(int gtfsFileId) async {
     final db = await _db;

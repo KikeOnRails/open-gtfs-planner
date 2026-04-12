@@ -1,8 +1,17 @@
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/gtfs_models.dart';
 import '../core/database/gtfs_repository.dart';
 import 'project_providers.dart';
+
+// ---------------------------------------------------------------------------
+// Map Controller (shared across widgets)
+// ---------------------------------------------------------------------------
+
+final mapControllerProvider = Provider<MapController>((ref) {
+  return MapController();
+});
 
 // ---------------------------------------------------------------------------
 // Simulation date/time

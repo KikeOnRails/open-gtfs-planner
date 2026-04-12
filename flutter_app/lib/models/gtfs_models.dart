@@ -223,9 +223,8 @@ class TripModel {
 
   bool isActiveAt(DateTime d) {
     if (startDatetime == null || endDatetime == null) return false;
-    return d.isAfter(startDatetime!) && d.isBefore(endDatetime!) ||
-        d.isAtSameMomentAs(startDatetime!) ||
-        d.isAtSameMomentAs(endDatetime!);
+    return (d.isAfter(startDatetime!) || d.isAtSameMomentAs(startDatetime!)) &&
+           (d.isBefore(endDatetime!) || d.isAtSameMomentAs(endDatetime!));
   }
 
   double getTripPercent(DateTime d) {
