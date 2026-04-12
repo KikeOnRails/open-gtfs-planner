@@ -182,6 +182,10 @@ class TripModel {
   // Computed datetimes
   DateTime? startDatetime;
   DateTime? endDatetime;
+  
+  // Precomputed shape indices for each stop (index in shape path)
+  // This maps each stop to its corresponding position in the shape
+  List<int>? shapeIndicesForStops;
 
   TripModel({
     required this.id,
@@ -195,6 +199,7 @@ class TripModel {
     this.shapeId,
     this.route,
     this.stopTimes,
+    this.shapeIndicesForStops,
   });
 
   factory TripModel.fromMap(Map<String, dynamic> map) {

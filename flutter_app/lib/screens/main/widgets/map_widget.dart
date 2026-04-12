@@ -79,6 +79,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         activeTripsAsync.when(
           data: (trips) {
             final activeNow = trips.where((t) => t.isActiveAt(simDateTime)).toList();
+            // Precompute shape indices for trips that don't have them yet
+            _precomputeShapeIndices(activeNow);
             return MarkerLayer(
               markers: _buildVehicleMarkers(activeNow, simDateTime, simVis, selectedTrip),
             );
@@ -180,12 +182,16 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
     StopTimeModel? prev;
     StopTimeModel? next;
+    int prevIndex = 0;
 
     for (var i = 0; i < stopTimes.length; i++) {
       final arrivalDt = stopTimes[i].getArrivalTimeInDate(simDateTime);
       if (arrivalDt.isAfter(simDateTime)) {
         next = stopTimes[i];
-        if (i > 0) prev = stopTimes[i - 1];
+        if (i > 0) {
+          prev = stopTimes[i - 1];
+          prevIndex = i - 1;
+        }
         break;
       }
     }
@@ -220,6 +226,31 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       fraction = (timeCurrent - timePrev) / (timeNext - timePrev);
     }
 
+    // Try to use shape if available with precomputed indices
+    if (trip.shapeId != null && trip.shapeId!.isNotEmpty) {
+      final shapePath = _shapesCache[trip.gtfsFileId]?[trip.shapeId!];
+      final shapeIndices = trip.shapeIndicesForStops;
+      
+      if (shapePath != null && shapePath.isNotEmpty && 
+          shapeIndices != null && shapeIndices.length > prevIndex + 1) {
+        final result = InterpolationHelper.interpolateAlongShape(
+          shapePath,
+          prevStop.stopLat,
+          prevStop.stopLon,
+          nextStop.stopLat,
+          nextStop.stopLon,
+          fraction,
+          prevShapeIndex: shapeIndices[prevIndex],
+          nextShapeIndex: shapeIndices[prevIndex + 1],
+        );
+        
+        if (result != null) {
+          return LatLng(result.$1, result.$2);
+        }
+      }
+    }
+
+    // Fallback to direct interpolation between stops
     final result = InterpolationHelper.interpolateGeodetic(
       prevStop.stopLat,
       prevStop.stopLon,
@@ -229,6 +260,36 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     );
 
     return LatLng(result.$1, result.$2);
+  }
+
+  /// Precompute shape indices for trips that have shapes but no indices yet
+  void _precomputeShapeIndices(List<TripModel> trips) {
+    for (final trip in trips) {
+      // Skip if already computed or no shape available
+      if (trip.shapeIndicesForStops != null) continue;
+      if (trip.shapeId == null || trip.shapeId!.isEmpty) continue;
+      if (trip.stopTimes == null || trip.stopTimes!.isEmpty) continue;
+      
+      final shapePath = _shapesCache[trip.gtfsFileId]?[trip.shapeId!];
+      if (shapePath == null || shapePath.isEmpty) continue;
+      
+      // Extract stop coordinates
+      final stopCoords = <(double, double)>[];
+      for (final st in trip.stopTimes!) {
+        final stop = st.stop;
+        if (stop != null) {
+          stopCoords.add((stop.stopLat, stop.stopLon));
+        }
+      }
+      
+      if (stopCoords.isEmpty) continue;
+      
+      // Compute and store indices
+      trip.shapeIndicesForStops = InterpolationHelper.computeShapeIndicesForStops(
+        shapePath,
+        stopCoords,
+      );
+    }
   }
 
   void _preloadLayerData(
