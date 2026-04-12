@@ -40,90 +40,95 @@ class _SimulationBarState extends ConsumerState<SimulationBar> {
 
   @override
   Widget build(BuildContext context) {
-    final simTime = ref.watch(simulationTimeProvider);
+    // Usar select para solo actualizar partes específicas
+    final dateTime = ref.watch(simulationTimeProvider.select((s) => s.dateTime));
+    final isPlaying = ref.watch(simulationTimeProvider.select((s) => s.isPlaying));
+    final speedMultiplier = ref.watch(simulationTimeProvider.select((s) => s.speedMultiplier));
     final servicesAsync = ref.watch(activeServicesProvider);
 
     // Sync timer state
-    if (simTime.isPlaying && (_timer == null || !_timer!.isActive)) {
+    if (isPlaying && (_timer == null || !_timer!.isActive)) {
       _startTimer();
-    } else if (!simTime.isPlaying && (_timer?.isActive ?? false)) {
+    } else if (!isPlaying && (_timer?.isActive ?? false)) {
       _stopTimer();
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF007E65), AppTheme.primary],
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-        ),
-        borderRadius: BorderRadius.circular(100),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.primary.withOpacity(0.3),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+    return RepaintBoundary(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF007E65), AppTheme.primary],
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
           ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Date picker
-          _SimBarLabel(label: 'Fecha'),
-          const SizedBox(width: 6),
-          _DateButton(
-            date: simTime.dateTime,
-            onChanged: (d) =>
-                ref.read(simulationTimeProvider.notifier).setDate(d),
-          ),
-
-          _simDivider(),
-
-          // Time display / editor
-          _SimBarLabel(label: 'Hora'),
-          const SizedBox(width: 6),
-          _TimeDisplay(
-            dateTime: simTime.dateTime,
-            onChanged: (h, m, s) =>
-                ref.read(simulationTimeProvider.notifier).setTime(h, m, s),
-          ),
-
-          _simDivider(),
-
-          // Speed button
-          _SpeedButton(
-            speed: simTime.speedMultiplier,
-            onTap: () =>
-                ref.read(simulationTimeProvider.notifier).nextSpeed(),
-          ),
-
-          _simDivider(),
-
-          // Play / Pause
-          _PlayPauseButtons(
-            isPlaying: simTime.isPlaying,
-            onPlay: () =>
-                ref.read(simulationTimeProvider.notifier).play(),
-            onPause: () =>
-                ref.read(simulationTimeProvider.notifier).pause(),
-          ),
-
-          _simDivider(),
-
-          // Services count
-          servicesAsync.when(
-            loading: () => const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2, color: Colors.white),
+          borderRadius: BorderRadius.circular(100),
+          boxShadow: [
+            BoxShadow(
+              color: AppTheme.primary.withOpacity(0.3),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
             ),
-            error: (_, __) => const SizedBox.shrink(),
-            data: (services) => _ServicesChip(count: services.length),
-          ),
-        ],
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Date picker
+            const _SimBarLabel(label: 'Fecha'),
+            const SizedBox(width: 6),
+            _DateButton(
+              date: dateTime,
+              onChanged: (d) =>
+                  ref.read(simulationTimeProvider.notifier).setDate(d),
+            ),
+
+            _simDivider(),
+
+            // Time display / editor
+            const _SimBarLabel(label: 'Hora'),
+            const SizedBox(width: 6),
+            _TimeDisplay(
+              dateTime: dateTime,
+              onChanged: (h, m, s) =>
+                  ref.read(simulationTimeProvider.notifier).setTime(h, m, s),
+            ),
+
+            _simDivider(),
+
+            // Speed button
+            _SpeedButton(
+              speed: speedMultiplier,
+              onTap: () =>
+                  ref.read(simulationTimeProvider.notifier).nextSpeed(),
+            ),
+
+            _simDivider(),
+
+            // Play / Pause
+            _PlayPauseButtons(
+              isPlaying: isPlaying,
+              onPlay: () =>
+                  ref.read(simulationTimeProvider.notifier).play(),
+              onPause: () =>
+                  ref.read(simulationTimeProvider.notifier).pause(),
+            ),
+
+            _simDivider(),
+
+            // Services count
+            servicesAsync.when(
+              loading: () => const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+              ),
+              error: (_, __) => const SizedBox.shrink(),
+              data: (services) => _ServicesChip(count: services.length),
+            ),
+          ],
+        ),
       ),
     );
   }

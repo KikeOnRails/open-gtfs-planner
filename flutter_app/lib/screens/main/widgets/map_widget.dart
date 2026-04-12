@@ -19,7 +19,6 @@ class MapWidget extends ConsumerStatefulWidget {
 
 class _MapWidgetState extends ConsumerState<MapWidget> {
   final MapController _mapController = MapController();
-  bool _initialized = false;
   // Cache for shapes: gtfsFileId -> shape_id -> List<LatLng>
   final Map<int, Map<String, List<LatLng>>> _shapesCache = {};
   // Cache for stops per file
@@ -27,17 +26,19 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final simTime = ref.watch(simulationTimeProvider);
-    final activeTripsAsync = ref.watch(activeTripsProvider);
+    // Observar solo lo necesario
     final gtfsFilesAsync = ref.watch(gtfsFilesProvider);
+    final gtfsFiles = gtfsFilesAsync.valueOrNull ?? [];
     final fileVis = ref.watch(gtfsFileVisibilityProvider);
     final shapeVis = ref.watch(routeShapeVisibilityProvider);
     final stopsVis = ref.watch(gtfsStopsVisibilityProvider);
-    final simVis = ref.watch(routeSimulationVisibilityProvider);
     final selectedStop = ref.watch(selectedStopProvider);
+    
+    // Solo observar el dateTime para vehículos
+    final simDateTime = ref.watch(simulationTimeProvider.select((state) => state.dateTime));
+    final activeTripsAsync = ref.watch(activeTripsProvider);
+    final simVis = ref.watch(routeSimulationVisibilityProvider);
     final selectedTrip = ref.watch(selectedTripProvider);
-
-    final gtfsFiles = gtfsFilesAsync.valueOrNull ?? [];
 
     // Load shapes and stops reactively
     _preloadLayerData(gtfsFiles, shapeVis, stopsVis);
@@ -47,10 +48,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       options: MapOptions(
         initialCenter: const LatLng(40.4168, -3.7038), // Madrid
         initialZoom: 13,
-        onTap: (_, pos) => _handleMapTap(pos, simTime.dateTime),
+        onTap: (_, pos) => _handleMapTap(pos, simDateTime),
       ),
       children: [
-        // OSM Tile Layer (free)
+        // OSM Tile Layer
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.opengtfsplanner.app',
@@ -69,13 +70,15 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         ),
 
         // Vehicle simulation markers
-        MarkerLayer(
-          markers: activeTripsAsync.when(
-            data: (trips) => _buildVehicleMarkers(trips, simTime.dateTime,
-                simVis, selectedTrip),
-            loading: () => [],
-            error: (_, __) => [],
-          ),
+        activeTripsAsync.when(
+          data: (trips) {
+            final activeNow = trips.where((t) => t.isActiveAt(simDateTime)).toList();
+            return MarkerLayer(
+              markers: _buildVehicleMarkers(activeNow, simDateTime, simVis, selectedTrip),
+            );
+          },
+          loading: () => const SizedBox.shrink(),
+          error: (_, __) => const SizedBox.shrink(),
         ),
 
         // Attribution
@@ -89,6 +92,137 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         ),
       ],
     );
+  }
+
+  List<Marker> _buildVehicleMarkers(
+    List<TripModel> trips,
+    DateTime simDateTime,
+    Map<int, bool> simVis,
+    TripModel? selectedTrip,
+  ) {
+    final markers = <Marker>[];
+
+    for (final trip in trips) {
+      if (simVis.isNotEmpty && simVis[trip.routeDbId] != true) continue;
+
+      final pos = _getTripPosition(trip, simDateTime);
+      if (pos == null) continue;
+
+      final route = trip.route;
+      final routeColor = route != null
+          ? hexToColor(route.routeColor)
+          : AppTheme.primary;
+      final textColor =
+          route?.routeTextColor != null && route!.routeTextColor!.isNotEmpty
+              ? hexToColor(route.routeTextColor)
+              : Colors.white;
+
+      final isSelected = selectedTrip?.id == trip.id;
+      final size = isSelected ? 44.0 : 36.0;
+
+      markers.add(
+        Marker(
+          key: ValueKey('vehicle_${trip.id}'),
+          point: pos,
+          width: size,
+          height: size,
+          child: GestureDetector(
+            onTap: () {
+              ref.read(selectedTripProvider.notifier).state = trip;
+              ref.read(selectedStopProvider.notifier).state = null;
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: routeColor,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isSelected ? Colors.yellow : Colors.black,
+                  width: isSelected ? 3 : 2,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: routeColor.withOpacity(0.5),
+                    blurRadius: isSelected ? 10 : 4,
+                    spreadRadius: isSelected ? 2 : 0,
+                  ),
+                ],
+              ),
+              child: Center(
+                child: Text(
+                  route?.displayName ?? '?',
+                  style: TextStyle(
+                    color: textColor,
+                    fontWeight: FontWeight.bold,
+                    fontSize: isSelected ? 12 : 10,
+                  ),
+                  overflow: TextOverflow.clip,
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return markers;
+  }
+
+  LatLng? _getTripPosition(TripModel trip, DateTime simDateTime) {
+    final stopTimes = trip.stopTimes;
+    if (stopTimes == null || stopTimes.isEmpty) return null;
+
+    StopTimeModel? prev;
+    StopTimeModel? next;
+
+    for (var i = 0; i < stopTimes.length; i++) {
+      final arrivalDt = stopTimes[i].getArrivalTimeInDate(simDateTime);
+      if (arrivalDt.isAfter(simDateTime)) {
+        next = stopTimes[i];
+        if (i > 0) prev = stopTimes[i - 1];
+        break;
+      }
+    }
+
+    if (next == null) {
+      final last = stopTimes.last;
+      final s = last.stop;
+      if (s == null) return null;
+      return LatLng(s.stopLat, s.stopLon);
+    }
+
+    if (prev == null) {
+      final s = next.stop;
+      if (s == null) return null;
+      return LatLng(s.stopLat, s.stopLon);
+    }
+
+    final prevStop = prev.stop;
+    final nextStop = next.stop;
+    if (prevStop == null || nextStop == null) return null;
+
+    final timePrev = prev.getArrivalTimeInDate(simDateTime).millisecondsSinceEpoch;
+    final timeNext = next.getArrivalTimeInDate(simDateTime).millisecondsSinceEpoch;
+    final timeCurrent = simDateTime.millisecondsSinceEpoch;
+
+    double fraction;
+    if (timeCurrent <= timePrev) {
+      fraction = 0;
+    } else if (timeCurrent >= timeNext) {
+      fraction = 1;
+    } else {
+      fraction = (timeCurrent - timePrev) / (timeNext - timePrev);
+    }
+
+    final result = InterpolationHelper.interpolateGeodetic(
+      prevStop.stopLat,
+      prevStop.stopLon,
+      nextStop.stopLat,
+      nextStop.stopLon,
+      fraction,
+    );
+
+    return LatLng(result.$1, result.$2);
   }
 
   void _preloadLayerData(
@@ -221,157 +355,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     return markers;
   }
 
-  List<Marker> _buildVehicleMarkers(
-    List<TripModel> trips,
-    DateTime simDateTime,
-    Map<int, bool> simVis,
-    TripModel? selectedTrip,
-  ) {
-    final markers = <Marker>[];
-
-    for (final trip in trips) {
-      // Check simulation visibility
-      if (simVis.isNotEmpty && simVis[trip.routeDbId] != true) continue;
-
-      final pos = _getTripPosition(trip, simDateTime);
-      if (pos == null) continue;
-
-      final route = trip.route;
-      final routeColor = route != null
-          ? hexToColor(route.routeColor)
-          : AppTheme.primary;
-      final textColor =
-          route?.routeTextColor != null && route!.routeTextColor!.isNotEmpty
-              ? hexToColor(route.routeTextColor)
-              : Colors.white;
-
-      final isSelected = selectedTrip?.id == trip.id;
-      final size = isSelected ? 44.0 : 36.0;
-
-      markers.add(
-        Marker(
-          point: pos,
-          width: size,
-          height: size,
-          child: GestureDetector(
-            onTap: () {
-              ref.read(selectedTripProvider.notifier).state = trip;
-              ref.read(selectedStopProvider.notifier).state = null;
-            },
-            child: Container(
-              decoration: BoxDecoration(
-                color: routeColor,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isSelected ? Colors.yellow : Colors.black,
-                  width: isSelected ? 3 : 2,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: routeColor.withOpacity(0.5),
-                    blurRadius: isSelected ? 10 : 4,
-                    spreadRadius: isSelected ? 2 : 0,
-                  ),
-                ],
-              ),
-              child: Center(
-                child: Text(
-                  route?.displayName ?? '?',
-                  style: TextStyle(
-                    color: textColor,
-                    fontWeight: FontWeight.bold,
-                    fontSize: isSelected ? 12 : 10,
-                  ),
-                  overflow: TextOverflow.clip,
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    return markers;
-  }
-
-  LatLng? _getTripPosition(TripModel trip, DateTime simDateTime) {
-    final stopTimes = trip.stopTimes;
-    if (stopTimes == null || stopTimes.isEmpty) return null;
-
-    // Find prev/next stop
-    StopTimeModel? prev;
-    StopTimeModel? next;
-
-    for (var i = 0; i < stopTimes.length; i++) {
-      final arrivalDt = stopTimes[i].getArrivalTimeInDate(simDateTime);
-      if (arrivalDt.isAfter(simDateTime)) {
-        next = stopTimes[i];
-        if (i > 0) prev = stopTimes[i - 1];
-        break;
-      }
-    }
-
-    if (next == null) {
-      // Past the last stop
-      final last = stopTimes.last;
-      final s = last.stop;
-      if (s == null) return null;
-      return LatLng(s.stopLat, s.stopLon);
-    }
-
-    if (prev == null) {
-      // Before first stop
-      final s = next.stop;
-      if (s == null) return null;
-      return LatLng(s.stopLat, s.stopLon);
-    }
-
-    final prevStop = prev.stop;
-    final nextStop = next.stop;
-    if (prevStop == null || nextStop == null) return null;
-
-    final timePrev = prev.getArrivalTimeInDate(simDateTime).millisecondsSinceEpoch;
-    final timeNext = next.getArrivalTimeInDate(simDateTime).millisecondsSinceEpoch;
-    final timeCurrent = simDateTime.millisecondsSinceEpoch;
-
-    double fraction;
-    if (timeCurrent <= timePrev) {
-      fraction = 0;
-    } else if (timeCurrent >= timeNext) {
-      fraction = 1;
-    } else {
-      fraction = (timeCurrent - timePrev) / (timeNext - timePrev);
-    }
-
-    final result = InterpolationHelper.interpolateGeodetic(
-      prevStop.stopLat,
-      prevStop.stopLon,
-      nextStop.stopLat,
-      nextStop.stopLon,
-      fraction,
-    );
-
-    return LatLng(result.$1, result.$2);
-  }
-
   void _handleMapTap(LatLng pos, DateTime simDateTime) {
     const threshold = 50.0; // metres
 
-    // Check if click is on a trip
-    final selectedTrip = ref.read(selectedTripProvider);
-    if (selectedTrip != null) {
-      final tripPos = _getTripPosition(selectedTrip, simDateTime);
-      if (tripPos != null) {
-        final dist = InterpolationHelper.haversineMeters(
-            pos.latitude, pos.longitude, tripPos.latitude, tripPos.longitude);
-        if (dist > threshold) {
-          ref.read(selectedTripProvider.notifier).state = null;
-        }
-      }
-    }
-
-    // Check if click is on a stop
+    // Check if click is on a stop - deselect if clicking far away
     final selectedStop = ref.read(selectedStopProvider);
     if (selectedStop != null) {
       final dist = InterpolationHelper.haversineMeters(
@@ -381,6 +368,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           selectedStop.stopLon);
       if (dist > threshold) {
         ref.read(selectedStopProvider.notifier).state = null;
+        ref.read(selectedTripProvider.notifier).state = null;
       }
     }
   }

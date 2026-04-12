@@ -95,13 +95,15 @@ class SimulationTimeNotifier extends StateNotifier<SimulationTime> {
 
 final activeServicesProvider =
     FutureProvider<List<ServiceInfo>>((ref) async {
-  final simTime = ref.watch(simulationTimeProvider);
+  // Solo observar la FECHA, no la hora completa
+  final simDate = ref.watch(simulationTimeProvider.select(
+      (state) => DateTime(state.dateTime.year, state.dateTime.month, state.dateTime.day)));
   final gtfsFilesAsync = ref.watch(gtfsFilesProvider);
 
   final gtfsFiles = gtfsFilesAsync.valueOrNull ?? [];
   if (gtfsFiles.isEmpty) return [];
 
-  return GtfsRepository.getActiveServices(gtfsFiles, simTime.dateTime);
+  return GtfsRepository.getActiveServices(gtfsFiles, simDate);
 });
 
 // ---------------------------------------------------------------------------
@@ -116,7 +118,9 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
   @override
   Future<List<TripModel>> build() async {
     final services = await ref.watch(activeServicesProvider.future);
-    final simTime = ref.watch(simulationTimeProvider);
+    // Solo observar la fecha, no la hora completa para evitar rebuilds en cada tick
+    ref.watch(simulationTimeProvider.select(
+        (state) => DateTime(state.dateTime.year, state.dateTime.month, state.dateTime.day)));
     final simVisibility =
         ref.watch(routeSimulationVisibilityProvider);
 
@@ -132,27 +136,25 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
     await GtfsRepository.loadStopTimesForTrips(allTrips);
 
     // Generate datetimes relative to simulation date
+    // Usar la fecha completa del provider para generar datetimes
+    final fullDateTime = ref.read(simulationTimeProvider).dateTime;
     for (final trip in allTrips) {
-      trip.generateDatetimes(simTime.dateTime);
+      trip.generateDatetimes(fullDateTime);
     }
 
-    // Filter only trips that are active at the current simulation time
-    // and have simulation visibility enabled
+    // Retornar todos los trips del día, el filtrado por hora se hará en el widget
+    // para evitar rebuilds constantes
     final visibleRouteIds = simVisibility.entries
         .where((e) => e.value)
         .map((e) => e.key)
         .toSet();
 
     if (visibleRouteIds.isEmpty) {
-      return allTrips
-          .where((t) => t.isActiveAt(simTime.dateTime))
-          .toList();
+      return allTrips;
     }
 
     return allTrips
-        .where((t) =>
-            t.isActiveAt(simTime.dateTime) &&
-            visibleRouteIds.contains(t.routeDbId))
+        .where((t) => visibleRouteIds.contains(t.routeDbId))
         .toList();
   }
 }
