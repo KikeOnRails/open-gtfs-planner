@@ -1,7 +1,3 @@
-import 'dart:typed_data';
-
-import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +8,7 @@ import '../../../models/gtfs_models.dart';
 import '../../../providers/project_providers.dart';
 import '../../../providers/simulation_providers.dart';
 import '../../../core/database/gtfs_repository.dart';
+import 'create_gtfs_dialog.dart';
 
 class LayersPanel extends ConsumerStatefulWidget {
   const LayersPanel({super.key});
@@ -88,9 +85,9 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
               ),
             ),
           Tooltip(
-            message: 'Importar GTFS',
+            message: 'Crear GTFS',
             child: InkWell(
-              onTap: _importGtfs,
+              onTap: () => showCreateGtfsDialog(context, ref),
               borderRadius: BorderRadius.circular(8),
               child: Container(
                 padding: const EdgeInsets.all(6),
@@ -204,7 +201,7 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Importa un archivo GTFS (.zip)\no una carpeta GTFS descomprimida',
+            'Importa, crea o descarga\nun archivo GTFS para empezar',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: AppTheme.onSurfaceVariant.withOpacity(0.7),
                 ),
@@ -212,9 +209,9 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
           ),
           const SizedBox(height: 16),
           OutlinedButton.icon(
-            onPressed: _importGtfs,
+            onPressed: () => showCreateGtfsDialog(context, ref),
             icon: const Icon(Icons.add, size: 16),
-            label: const Text('Importar GTFS'),
+            label: const Text('Crear GTFS'),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
@@ -232,87 +229,6 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
     );
   }
 
-  Future<void> _importGtfs() async {
-    final project = ref.read(currentProjectProvider);
-    if (project == null) return;
-
-    // Pick a zip file or folder - do this BEFORE starting background import
-    if (kIsWeb) {
-      // Web: pick zip file only (bytes mode)
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['zip'],
-        withData: true,
-        dialogTitle: 'Selecciona archivo GTFS (.zip)',
-      );
-      if (result == null || result.files.isEmpty) return;
-      final bytes = result.files.first.bytes;
-      if (bytes == null) return;
-
-      // Start import in background - don't await
-      _runImportFromBytes(project.id, result.files.first.name, bytes);
-    } else {
-      // Desktop: pick zip or folder
-      final zipResult = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['zip'],
-        dialogTitle:
-            'Selecciona archivo GTFS (.zip) o cancela para elegir carpeta',
-      );
-
-      String? path;
-      if (zipResult != null && zipResult.files.isNotEmpty) {
-        path = zipResult.files.first.path;
-      } else {
-        // Fall back to folder picker
-        path = await FilePicker.platform.getDirectoryPath(
-          dialogTitle: 'Selecciona carpeta GTFS',
-        );
-      }
-
-      if (path == null) return;
-
-      // Start import in background - don't await
-      _runImport(project.id, path);
-    }
-  }
-
-  Future<void> _runImport(int projectId, String path) async {
-    try {
-      await ref.read(gtfsImportProvider).importFromPath(projectId, path);
-      _afterImport();
-    } catch (e) {
-      _showImportError(e);
-    }
-  }
-
-  Future<void> _runImportFromBytes(
-      int projectId, String filename, Uint8List bytes) async {
-    try {
-      await ref
-          .read(gtfsImportProvider)
-          .importFromBytes(projectId, filename, bytes);
-      _afterImport();
-    } catch (e) {
-      _showImportError(e);
-    }
-  }
-
-  void _afterImport() {
-    ref.invalidate(activeServicesProvider);
-    ref.invalidate(activeTripsProvider);
-  }
-
-  void _showImportError(Object e) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error al importar GTFS: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +400,8 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
   @override
   Widget build(BuildContext context) {
     final routesAsync = ref.watch(routesProvider(widget.gtfsFile.id));
+    final agencyVis = ref.watch(agencyVisibilityProvider);
+    final isVisible = agencyVis[widget.agency.id] ?? true;
 
     return routesAsync.when(
       loading: () => const SizedBox.shrink(),
@@ -514,19 +432,56 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
                     Expanded(
                       child: Text(
                         widget.agency.agencyName,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 11,
-                          color: AppTheme.onSurfaceVariant,
+                          color: isVisible
+                              ? AppTheme.onSurfaceVariant
+                              : AppTheme.onSurfaceVariant.withOpacity(0.4),
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     Text(
                       '${agencyRoutes.length} rutas',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10,
-                        color: AppTheme.onSurfaceVariant,
+                        color: isVisible
+                            ? AppTheme.onSurfaceVariant
+                            : AppTheme.onSurfaceVariant.withOpacity(0.4),
                       ),
+                    ),
+                    const SizedBox(width: 4),
+                    // Agency visibility toggle
+                    _SmallIconButton(
+                      icon: isVisible
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                      active: isVisible,
+                      tooltip: isVisible
+                          ? 'Ocultar agencia'
+                          : 'Mostrar agencia',
+                      onTap: () {
+                        final notifier = ref.read(
+                            agencyVisibilityProvider.notifier);
+                        notifier.set(widget.agency.id, !isVisible);
+                        // Cascade: when hiding, also clear route-level
+                        // shape/sim/stops visibility for this agency's routes
+                        if (isVisible) {
+                          final shapeNotifier = ref.read(
+                              routeShapeVisibilityProvider.notifier);
+                          final simNotifier = ref.read(
+                              routeSimulationVisibilityProvider.notifier);
+                          final stopsNotifier = ref.read(
+                              routeStopsVisibilityProvider.notifier);
+                          for (final r in agencyRoutes) {
+                            shapeNotifier.remove(r.id);
+                            simNotifier.set(r.id, false);
+                            stopsNotifier.set(r.id, false);
+                          }
+                          // Also invalidate active trips
+                          ref.invalidate(activeTripsProvider);
+                        }
+                      },
                     ),
                   ],
                 ),

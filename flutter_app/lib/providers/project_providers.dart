@@ -122,6 +122,12 @@ final routeStopsVisibilityProvider =
   (_) => MapNotifier({}),
 );
 
+/// Per-agency visibility: agencyDbId -> bool (visible; default true when absent)
+final agencyVisibilityProvider =
+    StateNotifierProvider<MapNotifier<int, bool>, Map<int, bool>>(
+  (_) => MapNotifier({}),
+);
+
 class MapNotifier<K, V> extends StateNotifier<Map<K, V>> {
   MapNotifier(super.initial);
 

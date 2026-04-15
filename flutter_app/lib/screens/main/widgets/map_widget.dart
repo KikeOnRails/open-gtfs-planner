@@ -46,6 +46,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final shapeVis = ref.watch(routeShapeVisibilityProvider);
     final stopsVis = ref.watch(gtfsStopsVisibilityProvider);
     final selectedStop = ref.watch(selectedStopProvider);
+    final agencyVis = ref.watch(agencyVisibilityProvider);
 
     // Solo observar el dateTime para vehículos
     final simDateTime =
@@ -76,12 +77,12 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
         // Route shapes (polylines)
         PolylineLayer(
-          polylines: _buildPolylines(gtfsFiles, fileVis, shapeVis, selectedTrip),
+          polylines: _buildPolylines(gtfsFiles, fileVis, shapeVis, selectedTrip, agencyVis),
         ),
 
         // Stop markers
         MarkerLayer(
-          markers: _buildStopMarkers(gtfsFiles, stopsVis, selectedStop, ref.watch(routeStopsVisibilityProvider)),
+          markers: _buildStopMarkers(gtfsFiles, stopsVis, selectedStop, ref.watch(routeStopsVisibilityProvider), agencyVis),
         ),
 
         // Vehicle simulation markers
@@ -93,7 +94,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
             _precomputeShapeIndices(activeNow);
             return MarkerLayer(
               markers: _buildVehicleMarkers(
-                  activeNow, simDateTime, simVis, selectedTrip),
+                  activeNow, simDateTime, simVis, selectedTrip, agencyVis),
             );
           },
           loading: () => const SizedBox.shrink(),
@@ -118,6 +119,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     DateTime simDateTime,
     Map<int, bool> simVis,
     TripModel? selectedTrip,
+    Map<int, bool> agencyVis,
   ) {
     final markers = <Marker>[];
     final fileVisibility = ref.read(gtfsFileVisibilityProvider);
@@ -126,6 +128,12 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       // Verificar si el archivo GTFS del trip está visible
       final isFileVisible = fileVisibility[trip.gtfsFileId] ?? true;
       if (!isFileVisible) continue;
+
+      // Verificar visibilidad de la agencia
+      final agencyDbId = trip.route?.agencyDbId;
+      if (agencyDbId != null && agencyVis.containsKey(agencyDbId)) {
+        if (agencyVis[agencyDbId] == false) continue;
+      }
       
       if (simVis.isNotEmpty && simVis[trip.routeDbId] != true) continue;
 
@@ -403,6 +411,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     Map<int, bool> fileVis,
     Map<int, bool> shapeVis,
     TripModel? selectedTrip,
+    Map<int, bool> agencyVis,
   ) {
     final polylines = <Polyline>[];
 
@@ -471,6 +480,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         Color routeColor = AppTheme.primary;
         
         if (route != null) {
+          // Verificar visibilidad de la agencia
+          final agencyDbId = route.agencyDbId;
+          if (agencyDbId != null && agencyVis[agencyDbId] == false) continue;
+
           // Si shapeVis está vacío, mostrar todas las rutas por defecto
           // Si shapeVis tiene valores, solo mostrar las marcadas como true
           shouldShow = shapeVis.isEmpty || (shapeVis[route.id] ?? false);
@@ -531,11 +544,33 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     Map<int, bool> stopsVis,
     StopModel? selectedStop,
     Map<int, bool> routeStopsVis,
+    Map<int, bool> agencyVis,
   ) {
     final markers = <Marker>[];
 
+    // Build a flat route lookup map from cache
+    final routeById = <int, RouteModel>{};
+    for (final routes in _routesCache.values) {
+      for (final r in routes) {
+        routeById[r.id] = r;
+      }
+    }
+
     // Si hay rutas con paradas visibles, cargar solo esas paradas
-    final visibleRoutes = routeStopsVis.entries.where((e) => e.value).map((e) => e.key).toList();
+    // Filtrar las rutas cuya agencia esté oculta
+    final visibleRoutes = routeStopsVis.entries
+        .where((e) => e.value)
+        .where((e) {
+          final route = routeById[e.key];
+          if (route == null) return true;
+          final agencyDbId = route.agencyDbId;
+          if (agencyDbId != null && agencyVis.containsKey(agencyDbId)) {
+            return agencyVis[agencyDbId] != false;
+          }
+          return true;
+        })
+        .map((e) => e.key)
+        .toList();
     
     if (visibleRoutes.isNotEmpty) {
       // Mostrar paradas de rutas específicas

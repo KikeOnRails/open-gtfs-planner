@@ -129,6 +129,7 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
     ref.watch(simulationTimeProvider.select((state) => DateTime(
         state.dateTime.year, state.dateTime.month, state.dateTime.day)));
     final simVisibility = ref.watch(routeSimulationVisibilityProvider);
+    final agencyVisibility = ref.watch(agencyVisibilityProvider);
 
     if (services.isEmpty) return [];
 
@@ -152,11 +153,30 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
     final visibleRouteIds =
         simVisibility.entries.where((e) => e.value).map((e) => e.key).toSet();
 
-    if (visibleRouteIds.isEmpty) {
-      return allTrips;
+    // Filtrar por agencia oculta
+    final hiddenAgencyIds = agencyVisibility.entries
+        .where((e) => e.value == false)
+        .map((e) => e.key)
+        .toSet();
+
+    List<TripModel> filtered = allTrips;
+
+    // Excluir trips de agencias ocultas
+    if (hiddenAgencyIds.isNotEmpty) {
+      filtered = filtered
+          .where((t) {
+            final agencyDbId = t.route?.agencyDbId;
+            if (agencyDbId == null) return true;
+            return !hiddenAgencyIds.contains(agencyDbId);
+          })
+          .toList();
     }
 
-    return allTrips
+    if (visibleRouteIds.isEmpty) {
+      return filtered;
+    }
+
+    return filtered
         .where((t) => visibleRouteIds.contains(t.routeDbId))
         .toList();
   }
