@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:latlong2/latlong.dart';
 
+import '../../core/database/gtfs_repository.dart';
 import '../../core/theme/app_theme.dart';
+import '../../models/gtfs_models.dart';
 import '../../models/project_model.dart';
 import '../../providers/project_providers.dart';
 import '../../providers/simulation_providers.dart';
@@ -23,6 +27,7 @@ class MainScreen extends ConsumerStatefulWidget {
 class _MainScreenState extends ConsumerState<MainScreen> {
   bool _leftPanelOpen = true;
   bool _rightPanelOpen = true;
+  bool _hasFittedBounds = false;
 
   @override
   void initState() {
@@ -38,9 +43,66 @@ class _MainScreenState extends ConsumerState<MainScreen> {
             .firstOrNull;
         if (project != null) {
           ref.read(currentProjectProvider.notifier).state = project;
+          // Fit map to GTFS bounds after project is loaded
+          _fitMapToGtfsBounds();
         }
+      } else {
+        // Project already loaded, fit map to bounds
+        _fitMapToGtfsBounds();
       }
     });
+  }
+
+  Future<void> _fitMapToGtfsBounds() async {
+    if (_hasFittedBounds) return;
+    
+    // Wait a bit for the map to be ready
+    await Future.delayed(const Duration(milliseconds: 300));
+    
+    try {
+      final gtfsFilesAsync = await ref.read(gtfsFilesProvider.future);
+      if (gtfsFilesAsync.isEmpty) return;
+
+      // Collect all stops from all GTFS files
+      final allStops = <StopModel>[];
+      for (final file in gtfsFilesAsync) {
+        final stops = await GtfsRepository.getStops(file.id);
+        allStops.addAll(stops);
+      }
+
+      if (allStops.isEmpty) return;
+
+      // Calculate bounding box
+      double minLat = allStops.first.stopLat;
+      double maxLat = allStops.first.stopLat;
+      double minLon = allStops.first.stopLon;
+      double maxLon = allStops.first.stopLon;
+
+      for (final stop in allStops) {
+        if (stop.stopLat < minLat) minLat = stop.stopLat;
+        if (stop.stopLat > maxLat) maxLat = stop.stopLat;
+        if (stop.stopLon < minLon) minLon = stop.stopLon;
+        if (stop.stopLon > maxLon) maxLon = stop.stopLon;
+      }
+
+      // Fit map to bounds
+      final mapController = ref.read(mapControllerProvider);
+      final bounds = LatLngBounds(
+        LatLng(minLat, minLon),
+        LatLng(maxLat, maxLon),
+      );
+
+      mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: bounds,
+          padding: const EdgeInsets.all(50),
+        ),
+      );
+
+      _hasFittedBounds = true;
+    } catch (e) {
+      // Silently ignore errors
+    }
   }
 
   @override
@@ -218,6 +280,7 @@ class _ActiveTripsIndicator extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final tripsAsync = ref.watch(activeTripsProvider);
     final simVis = ref.watch(routeSimulationVisibilityProvider);
+    final simTime = ref.watch(simulationTimeProvider);
 
     return tripsAsync.when(
       loading: () => const SizedBox(
@@ -228,9 +291,13 @@ class _ActiveTripsIndicator extends ConsumerWidget {
       ),
       error: (_, __) => const SizedBox.shrink(),
       data: (trips) {
-        final visibleCount = simVis.isEmpty
-            ? trips.length
-            : trips.where((t) => simVis[t.routeDbId] == true).length;
+        // Filter by route visibility AND by active time
+        final visibleTrips = trips.where((t) {
+          if (simVis.isNotEmpty && simVis[t.routeDbId] != true) return false;
+          return t.isActiveAt(simTime.dateTime);
+        }).toList();
+        
+        final visibleCount = visibleTrips.length;
 
         if (visibleCount == 0) return const SizedBox.shrink();
 

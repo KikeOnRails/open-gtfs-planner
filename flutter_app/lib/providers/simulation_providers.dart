@@ -60,8 +60,7 @@ final simulationTimeProvider =
 );
 
 class SimulationTimeNotifier extends StateNotifier<SimulationTime> {
-  SimulationTimeNotifier()
-      : super(SimulationTime(dateTime: DateTime.now()));
+  SimulationTimeNotifier() : super(SimulationTime(dateTime: DateTime.now()));
 
   void setDateTime(DateTime dt) {
     state = state.copyWith(dateTime: dt);
@@ -70,7 +69,8 @@ class SimulationTimeNotifier extends StateNotifier<SimulationTime> {
   void setDate(DateTime d) {
     final cur = state.dateTime;
     state = state.copyWith(
-      dateTime: DateTime(d.year, d.month, d.day, cur.hour, cur.minute, cur.second),
+      dateTime:
+          DateTime(d.year, d.month, d.day, cur.hour, cur.minute, cur.second),
     );
   }
 
@@ -82,8 +82,7 @@ class SimulationTimeNotifier extends StateNotifier<SimulationTime> {
   }
 
   void advance() {
-    final dt = state.dateTime
-        .add(Duration(seconds: 5 * state.speedMultiplier));
+    final dt = state.dateTime.add(Duration(seconds: 5 * state.speedMultiplier));
     state = state.copyWith(dateTime: dt);
   }
 
@@ -102,11 +101,10 @@ class SimulationTimeNotifier extends StateNotifier<SimulationTime> {
 // Active services for the current simulation date
 // ---------------------------------------------------------------------------
 
-final activeServicesProvider =
-    FutureProvider<List<ServiceInfo>>((ref) async {
+final activeServicesProvider = FutureProvider<List<ServiceInfo>>((ref) async {
   // Solo observar la FECHA, no la hora completa
-  final simDate = ref.watch(simulationTimeProvider.select(
-      (state) => DateTime(state.dateTime.year, state.dateTime.month, state.dateTime.day)));
+  final simDate = ref.watch(simulationTimeProvider.select((state) =>
+      DateTime(state.dateTime.year, state.dateTime.month, state.dateTime.day)));
   final gtfsFilesAsync = ref.watch(gtfsFilesProvider);
 
   final gtfsFiles = gtfsFilesAsync.valueOrNull ?? [];
@@ -128,15 +126,13 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
   Future<List<TripModel>> build() async {
     final services = await ref.watch(activeServicesProvider.future);
     // Solo observar la fecha, no la hora completa para evitar rebuilds en cada tick
-    ref.watch(simulationTimeProvider.select(
-        (state) => DateTime(state.dateTime.year, state.dateTime.month, state.dateTime.day)));
-    final simVisibility =
-        ref.watch(routeSimulationVisibilityProvider);
+    ref.watch(simulationTimeProvider.select((state) => DateTime(
+        state.dateTime.year, state.dateTime.month, state.dateTime.day)));
+    final simVisibility = ref.watch(routeSimulationVisibilityProvider);
 
     if (services.isEmpty) return [];
 
-    final gtfsFileIds =
-        services.map((s) => s.gtfsFileId).toSet().toList();
+    final gtfsFileIds = services.map((s) => s.gtfsFileId).toSet().toList();
     final serviceIds = services.map((s) => s.serviceId).toList();
 
     final allTrips =
@@ -153,10 +149,8 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
 
     // Retornar todos los trips del día, el filtrado por hora se hará en el widget
     // para evitar rebuilds constantes
-    final visibleRouteIds = simVisibility.entries
-        .where((e) => e.value)
-        .map((e) => e.key)
-        .toSet();
+    final visibleRouteIds =
+        simVisibility.entries.where((e) => e.value).map((e) => e.key).toSet();
 
     if (visibleRouteIds.isEmpty) {
       return allTrips;
@@ -211,7 +205,6 @@ final selectedStopTimesProvider =
 final visibleStopsProvider = FutureProvider<List<StopModel>>((ref) async {
   final gtfsFilesAsync = ref.watch(gtfsFilesProvider);
   final fileVisibility = ref.watch(gtfsStopsVisibilityProvider);
-  final routeVisibility = ref.watch(routeShapeVisibilityProvider);
 
   final gtfsFiles = gtfsFilesAsync.valueOrNull ?? [];
   final stops = <StopModel>[];
@@ -224,3 +217,9 @@ final visibleStopsProvider = FutureProvider<List<StopModel>>((ref) async {
 
   return stops;
 });
+
+// ---------------------------------------------------------------------------
+// Interpolation mode (shape-based or direct geodetic)
+// ---------------------------------------------------------------------------
+
+final useShapeInterpolationProvider = StateProvider<bool>((ref) => true);

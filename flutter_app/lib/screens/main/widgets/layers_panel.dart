@@ -375,10 +375,18 @@ class _GtfsFileLayerState extends ConsumerState<_GtfsFileLayer> {
                       ? Icons.visibility_outlined
                       : Icons.visibility_off_outlined,
                   active: isVisible,
-                  tooltip: isVisible ? 'Ocultar shapes' : 'Mostrar shapes',
-                  onTap: () => ref
-                      .read(gtfsFileVisibilityProvider.notifier)
-                      .set(widget.gtfsFile.id, !isVisible),
+                  tooltip: isVisible ? 'Ocultar GTFS' : 'Mostrar GTFS',
+                  onTap: () {
+                    ref
+                        .read(gtfsFileVisibilityProvider.notifier)
+                        .set(widget.gtfsFile.id, !isVisible);
+                    // Si ocultamos el GTFS, también ocultar sus paradas
+                    if (isVisible) {
+                      ref
+                          .read(gtfsStopsVisibilityProvider.notifier)
+                          .set(widget.gtfsFile.id, false);
+                    }
+                  },
                 ),
                 const SizedBox(width: 4),
                 // Stops toggle
@@ -544,9 +552,11 @@ class _RouteLayer extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final shapeVis = ref.watch(routeShapeVisibilityProvider);
     final simVis = ref.watch(routeSimulationVisibilityProvider);
+    final stopsVis = ref.watch(routeStopsVisibilityProvider);
 
     final showShape = shapeVis[route.id] ?? false;
     final showSim = simVis[route.id] ?? false;
+    final showStops = stopsVis[route.id] ?? false;
 
     final routeColor = hexToColor(route.routeColor);
 
@@ -585,10 +595,28 @@ class _RouteLayer extends ConsumerWidget {
             icon: Icons.route_outlined,
             active: showShape,
             tooltip: showShape ? 'Ocultar recorrido' : 'Mostrar recorrido',
+            onTap: () async {
+              if (showShape) {
+                // Si está visible, lo quitamos del mapa para volver al estado por defecto
+                ref.read(routeShapeVisibilityProvider.notifier).remove(route.id);
+              } else {
+                // Si no está visible, lo marcamos como visible
+                ref.read(routeShapeVisibilityProvider.notifier).set(route.id, true);
+                // Centramos el mapa
+                await _centerMapOnRoute(ref);
+              }
+            },
+          ),
+          const SizedBox(width: 2),
+          // Stops visibility
+          _SmallIconButton(
+            icon: Icons.location_on_outlined,
+            active: showStops,
+            tooltip: showStops ? 'Ocultar paradas' : 'Mostrar paradas',
             onTap: () {
               ref
-                  .read(routeShapeVisibilityProvider.notifier)
-                  .set(route.id, !showShape);
+                  .read(routeStopsVisibilityProvider.notifier)
+                  .set(route.id, !showStops);
             },
           ),
           const SizedBox(width: 2),

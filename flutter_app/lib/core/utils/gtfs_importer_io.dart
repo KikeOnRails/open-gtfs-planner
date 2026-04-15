@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -12,14 +13,12 @@ Future<Map<String, String>> readZipContent(String zipPath) async {
 
   for (final file in archive) {
     if (file.isFile && file.name.toLowerCase().endsWith('.txt')) {
-      final baseName = file.name
-          .split('/')
-          .last
-          .replaceAll('.txt', '')
-          .toLowerCase();
+      final baseName =
+          file.name.split('/').last.replaceAll('.txt', '').toLowerCase();
       try {
         final fileBytes = file.content as Uint8List;
-        content[baseName] = String.fromCharCodes(fileBytes);
+        // Use UTF-8 decoding to properly handle BOM and special characters
+        content[baseName] = utf8.decode(fileBytes, allowMalformed: true);
       } catch (e) {
         debugPrint('Error reading ${file.name} from zip: $e');
       }
@@ -48,7 +47,9 @@ Future<Map<String, String>> readDirectoryContent(String dirPath) async {
           .replaceAll('.txt', '')
           .toLowerCase();
       try {
-        content[baseName] = entity.readAsStringSync();
+        // Read as bytes and decode as UTF-8 to properly handle BOM
+        final bytes = entity.readAsBytesSync();
+        content[baseName] = utf8.decode(bytes, allowMalformed: true);
       } catch (e) {
         debugPrint('Error reading ${entity.path}: $e');
       }

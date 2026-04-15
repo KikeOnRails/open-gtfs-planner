@@ -41,9 +41,12 @@ class _SimulationBarState extends ConsumerState<SimulationBar> {
   @override
   Widget build(BuildContext context) {
     // Usar select para solo actualizar partes específicas
-    final dateTime = ref.watch(simulationTimeProvider.select((s) => s.dateTime));
-    final isPlaying = ref.watch(simulationTimeProvider.select((s) => s.isPlaying));
-    final speedMultiplier = ref.watch(simulationTimeProvider.select((s) => s.speedMultiplier));
+    final dateTime =
+        ref.watch(simulationTimeProvider.select((s) => s.dateTime));
+    final isPlaying =
+        ref.watch(simulationTimeProvider.select((s) => s.isPlaying));
+    final speedMultiplier =
+        ref.watch(simulationTimeProvider.select((s) => s.speedMultiplier));
     final servicesAsync = ref.watch(activeServicesProvider);
 
     // Sync timer state
@@ -108,10 +111,8 @@ class _SimulationBarState extends ConsumerState<SimulationBar> {
             // Play / Pause
             _PlayPauseButtons(
               isPlaying: isPlaying,
-              onPlay: () =>
-                  ref.read(simulationTimeProvider.notifier).play(),
-              onPause: () =>
-                  ref.read(simulationTimeProvider.notifier).pause(),
+              onPlay: () => ref.read(simulationTimeProvider.notifier).play(),
+              onPause: () => ref.read(simulationTimeProvider.notifier).pause(),
             ),
 
             _simDivider(),
@@ -127,6 +128,11 @@ class _SimulationBarState extends ConsumerState<SimulationBar> {
               error: (_, __) => const SizedBox.shrink(),
               data: (services) => _ServicesChip(count: services.length),
             ),
+
+            _simDivider(),
+
+            // Interpolation mode toggle
+            const _InterpolationToggle(),
           ],
         ),
       ),
@@ -217,8 +223,7 @@ class _TimeDisplay extends StatelessWidget {
       onTap: () async {
         final picked = await showTimePicker(
           context: context,
-          initialTime:
-              TimeOfDay(hour: dateTime.hour, minute: dateTime.minute),
+          initialTime: TimeOfDay(hour: dateTime.hour, minute: dateTime.minute),
           builder: (ctx, child) => Theme(
             data: Theme.of(ctx).copyWith(
               colorScheme: const ColorScheme.dark(primary: AppTheme.primary),
@@ -341,8 +346,7 @@ class _SimBarIconButton extends StatelessWidget {
           ),
           child: Icon(
             icon,
-            color:
-                active ? Colors.white : Colors.white.withOpacity(0.5),
+            color: active ? Colors.white : Colors.white.withOpacity(0.5),
             size: 20,
           ),
         ),
@@ -378,6 +382,52 @@ class _ServicesChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _InterpolationToggle extends ConsumerWidget {
+  const _InterpolationToggle();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final useShape = ref.watch(useShapeInterpolationProvider);
+
+    return Tooltip(
+      message: useShape
+          ? 'Interpolación por shape (sigue la ruta exacta)'
+          : 'Interpolación directa (línea recta entre paradas)',
+      child: InkWell(
+        onTap: () =>
+            ref.read(useShapeInterpolationProvider.notifier).state = !useShape,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.15),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                useShape ? Icons.route : Icons.linear_scale,
+                size: 16,
+                color: Colors.white,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                useShape ? 'Shape' : 'Directo',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

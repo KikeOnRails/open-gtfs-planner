@@ -116,6 +116,12 @@ final routeSimulationVisibilityProvider =
   (_) => MapNotifier({}),
 );
 
+/// Per-route stops visibility: routeDbId -> bool
+final routeStopsVisibilityProvider =
+    StateNotifierProvider<MapNotifier<int, bool>, Map<int, bool>>(
+  (_) => MapNotifier({}),
+);
+
 class MapNotifier<K, V> extends StateNotifier<Map<K, V>> {
   MapNotifier(super.initial);
 

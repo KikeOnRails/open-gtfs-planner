@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
@@ -59,10 +60,16 @@ _ParsedGtfsData _parseAllContentInIsolate(GtfsContent content) {
 /// Static version of _parseContent for use in isolate
 List<Map<String, dynamic>> _parseContentStatic(
     GtfsContent content, String key) {
-  final csv = content[key];
+  var csv = content[key];
   if (csv == null || csv.isEmpty) return [];
 
   try {
+    // Normalize line endings: CRLF -> LF, and remove BOM
+    csv = csv
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .replaceAll('\uFEFF', '');
+
     final rows = const CsvToListConverter(
       eol: '\n',
       shouldParseNumbers: false,
@@ -70,10 +77,7 @@ List<Map<String, dynamic>> _parseContentStatic(
 
     if (rows.isEmpty) return [];
 
-    final headers = rows.first
-        .map((h) =>
-            h.toString().trim().replaceAll('\uFEFF', '').replaceAll('\r', ''))
-        .toList();
+    final headers = rows.first.map((h) => h.toString().trim()).toList();
 
     return rows.skip(1).where((row) => row.isNotEmpty).map((row) {
       final map = <String, dynamic>{};
@@ -99,7 +103,8 @@ GtfsContent _extractZipInIsolate(Uint8List bytes) {
           file.name.split('/').last.replaceAll('.txt', '').toLowerCase();
       try {
         final fileBytes = file.content as Uint8List;
-        content[baseName] = String.fromCharCodes(fileBytes);
+        // Use UTF-8 decoding to properly handle BOM and special characters
+        content[baseName] = utf8.decode(fileBytes, allowMalformed: true);
       } catch (e) {
         // Skip problematic files
       }

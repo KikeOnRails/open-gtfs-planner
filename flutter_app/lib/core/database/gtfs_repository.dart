@@ -55,8 +55,7 @@ class GtfsRepository {
       'import_path': importPath,
       'imported_at': DateTime.now().toIso8601String(),
     });
-    final rows =
-        await db.query('gtfs_files', where: 'id = ?', whereArgs: [id]);
+    final rows = await db.query('gtfs_files', where: 'id = ?', whereArgs: [id]);
     return GtfsFileModel.fromMap(rows.first);
   }
 
@@ -174,6 +173,20 @@ class GtfsRepository {
     final rows = await db.query('gtfs_stops', where: 'id = ?', whereArgs: [id]);
     if (rows.isEmpty) return null;
     return StopModel.fromMap(rows.first);
+  }
+
+  // Get unique stops for a specific route
+  static Future<List<StopModel>> getStopsByRoute(int routeDbId) async {
+    final db = await _db;
+    final rows = await db.rawQuery('''
+      SELECT DISTINCT s.*
+      FROM gtfs_stops s
+      INNER JOIN gtfs_stop_times st ON s.id = st.stop_db_id
+      INNER JOIN gtfs_trips t ON st.trip_db_id = t.id
+      WHERE t.route_db_id = ?
+      ORDER BY s.stop_name
+    ''', [routeDbId]);
+    return rows.map(StopModel.fromMap).toList();
   }
 
   // -------------------------------------------------------------------------
@@ -309,8 +322,7 @@ class GtfsRepository {
     return rows.map(ShapeModel.fromMap).toList();
   }
 
-  static Future<List<ShapeModel>> getAllShapesByGtfsFile(
-      int gtfsFileId) async {
+  static Future<List<ShapeModel>> getAllShapesByGtfsFile(int gtfsFileId) async {
     final db = await _db;
     final rows = await db.query(
       'gtfs_shapes',
@@ -321,11 +333,15 @@ class GtfsRepository {
     return rows.map(ShapeModel.fromMap).toList();
   }
 
-  // Group shapes by shape_id
+  // Group shapes by shape_id and ensure they are sorted by sequence
   static Map<String, List<ShapeModel>> groupShapes(List<ShapeModel> shapes) {
     final Map<String, List<ShapeModel>> grouped = {};
     for (final s in shapes) {
       grouped.putIfAbsent(s.shapeId, () => []).add(s);
+    }
+    // Ensure each group is sorted by shape_pt_sequence
+    for (final list in grouped.values) {
+      list.sort((a, b) => a.shapePtSequence.compareTo(b.shapePtSequence));
     }
     return grouped;
   }
@@ -346,10 +362,11 @@ class GtfsRepository {
   }
 
   // Get all shapes for a specific route
-  static Future<List<ShapeModel>> getShapesByRoute(int gtfsFileId, int routeDbId) async {
+  static Future<List<ShapeModel>> getShapesByRoute(
+      int gtfsFileId, int routeDbId) async {
     final shapeIds = await getShapeIdsByRoute(routeDbId);
     if (shapeIds.isEmpty) return [];
-    
+
     final db = await _db;
     final placeholders = shapeIds.map((_) => '?').join(',');
     final rows = await db.rawQuery('''
@@ -357,7 +374,7 @@ class GtfsRepository {
       WHERE gtfs_file_id = ? AND shape_id IN ($placeholders)
       ORDER BY shape_id, shape_pt_sequence ASC
     ''', [gtfsFileId, ...shapeIds]);
-    
+
     return rows.map(ShapeModel.fromMap).toList();
   }
 
@@ -516,8 +533,11 @@ class GtfsRepository {
     }
   }
 
-  static Future<void> bulkInsertStopTimes(Database db, int gtfsFileId,
-      Map<String, int> tripMap, Map<String, int> stopMap,
+  static Future<void> bulkInsertStopTimes(
+      Database db,
+      int gtfsFileId,
+      Map<String, int> tripMap,
+      Map<String, int> stopMap,
       List<Map<String, dynamic>> rows) async {
     const chunkSize = 1000;
     for (var i = 0; i < rows.length; i += chunkSize) {
@@ -604,10 +624,9 @@ class GtfsRepository {
           'gtfs_file_id': gtfsFileId,
           'service_id': row['service_id'] ?? '',
           'date': date,
-          'exception_type': int.tryParse(
-                  (row['exception_type'] ?? '1')
-                      .toString()
-                      .replaceAll(RegExp(r'\s'), '')) ??
+          'exception_type': int.tryParse((row['exception_type'] ?? '1')
+                  .toString()
+                  .replaceAll(RegExp(r'\s'), '')) ??
               1,
         });
       }
