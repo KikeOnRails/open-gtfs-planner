@@ -9,7 +9,9 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/interpolation_helper.dart';
 import '../../../models/gtfs_models.dart';
 import '../../../providers/project_providers.dart';
+import '../../../providers/shape_editor_provider.dart';
 import '../../../providers/simulation_providers.dart';
+import 'shape_editor_layer.dart';
 
 class MapWidget extends ConsumerStatefulWidget {
   const MapWidget({super.key});
@@ -65,10 +67,12 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       _shapeToRouteCache.clear();
     }
 
+    final editState = ref.watch(shapeEditorProvider);
+
     // Load shapes and stops reactively
     _preloadLayerData(gtfsFiles, shapeVis, stopsVis);
 
-    return FlutterMap(
+    final map = FlutterMap(
       mapController: _mapController,
       options: MapOptions(
         initialCenter: const LatLng(40.4168, -3.7038), // Madrid
@@ -85,14 +89,18 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           tileProvider: CancellableNetworkTileProvider(),
         ),
 
-        // Route shapes (polylines)
+        // Route shapes (polylines) — skip the shape being edited
         PolylineLayer(
-          polylines: _buildPolylines(gtfsFiles, fileVis, shapeVis, selectedTrip, agencyVis),
+          polylines: _buildPolylines(
+            gtfsFiles, fileVis, shapeVis, selectedTrip, agencyVis,
+            excludeShapeId: editState?.shapeId,
+          ),
         ),
 
         // Stop markers
         MarkerLayer(
-          markers: _buildStopMarkers(gtfsFiles, stopsVis, selectedStop, ref.watch(routeStopsVisibilityProvider), agencyVis),
+          markers: _buildStopMarkers(gtfsFiles, stopsVis, selectedStop,
+              ref.watch(routeStopsVisibilityProvider), agencyVis),
         ),
 
         // Vehicle simulation markers
@@ -111,6 +119,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           error: (_, __) => const SizedBox.shrink(),
         ),
 
+        // Shape editor layer (handles + edit polyline)
+        const ShapeEditorLayer(),
+
         // Attribution
         RichAttributionWidget(
           attributions: [
@@ -121,6 +132,99 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           ],
         ),
       ],
+    );
+
+    if (editState == null) return map;
+
+    // Wrap map in a Stack to show the edit toolbar
+    return Stack(children: [
+      map,
+      Positioned(
+        top: 12,
+        left: 0,
+        right: 0,
+        child: Center(child: _buildEditToolbar(context, editState)),
+      ),
+    ]);
+  }
+
+  Widget _buildEditToolbar(BuildContext context, ShapeEditState editState) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xF01E2129),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.orange.withOpacity(0.6), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.5),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.edit_road, color: Colors.orange, size: 16),
+          const SizedBox(width: 8),
+          Text(
+            'Editando shape${editState.routeName.isNotEmpty ? ': ${editState.routeName}' : ''}',
+            style: const TextStyle(
+                color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '(${editState.points.length} pts)',
+            style:
+                TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 11),
+          ),
+          const SizedBox(width: 12),
+          // Undo
+          _ToolbarBtn(
+            icon: Icons.undo,
+            label: 'Deshacer',
+            enabled: editState.canUndo && !editState.isSaving,
+            color: Colors.white70,
+            onTap: () => ref.read(shapeEditorProvider.notifier).undo(),
+          ),
+          const SizedBox(width: 6),
+          // Cancel
+          _ToolbarBtn(
+            icon: Icons.close,
+            label: 'Cancelar',
+            enabled: !editState.isSaving,
+            color: Colors.red[300]!,
+            onTap: () => ref.read(shapeEditorProvider.notifier).cancel(),
+          ),
+          const SizedBox(width: 6),
+          // Save
+          _ToolbarBtn(
+            icon: editState.isSaving ? null : Icons.check,
+            label: editState.isSaving ? 'Guardando…' : 'Guardar',
+            enabled: !editState.isSaving,
+            color: Colors.green[400]!,
+            loading: editState.isSaving,
+            onTap: () async {
+              final ok =
+                  await ref.read(shapeEditorProvider.notifier).save();
+              if (!mounted) return;
+              // Bust map shape cache so the updated shape reloads
+              ref.read(shapeCacheVersionProvider.notifier).state++;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                behavior: SnackBarBehavior.floating,
+                margin: const EdgeInsets.all(16),
+                backgroundColor:
+                    ok ? const Color(0xFF1B6B3A) : Colors.red[800],
+                content: Text(
+                  ok ? 'Shape guardado correctamente' : 'Error al guardar',
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ));
+            },
+          ),
+        ]),
+      ),
     );
   }
 
@@ -421,8 +525,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     Map<int, bool> fileVis,
     Map<int, bool> shapeVis,
     TripModel? selectedTrip,
-    Map<int, bool> agencyVis,
-  ) {
+    Map<int, bool> agencyVis, {
+    String? excludeShapeId,
+  }) {
     final polylines = <Polyline>[];
 
     // Si hay un vehículo seleccionado, solo mostrar su shape
@@ -481,6 +586,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         if (entry.value.isEmpty) continue;
         
         final shapeId = entry.key;
+
+        // Skip the shape currently being edited (ShapeEditorLayer renders it)
+        if (excludeShapeId != null && shapeId == excludeShapeId) continue;
         
         // Buscar la ruta que usa este shape_id
         final route = routesLoaded ? _findRouteForShapeId(routes, shapeId) : null;
@@ -725,6 +833,68 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         0,
       ]),
       child: tileWidget,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Edit toolbar button
+// ---------------------------------------------------------------------------
+
+class _ToolbarBtn extends StatelessWidget {
+  final IconData? icon;
+  final String label;
+  final bool enabled;
+  final bool loading;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ToolbarBtn({
+    required this.icon,
+    required this.label,
+    required this.enabled,
+    required this.color,
+    required this.onTap,
+    this.loading = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: enabled ? onTap : null,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 150),
+          opacity: enabled ? 1.0 : 0.4,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: color.withOpacity(0.5)),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              if (loading)
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 1.5, color: color),
+                )
+              else if (icon != null)
+                Icon(icon, size: 13, color: color),
+              const SizedBox(width: 4),
+              Text(label,
+                  style: TextStyle(
+                      color: color,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600)),
+            ]),
+          ),
+        ),
+      ),
     );
   }
 }

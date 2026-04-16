@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../models/gtfs_models.dart';
 import '../../../providers/project_providers.dart';
+import '../../../providers/shape_editor_provider.dart';
 import '../../../providers/simulation_providers.dart';
 import '../../../core/database/gtfs_repository.dart';
 import 'create_gtfs_dialog.dart';
@@ -617,6 +618,37 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
     }
   }
 
+  Future<void> _startEditingShape() async {
+    final shapeIds =
+        await GtfsRepository.getShapeIdsByRoute(widget.route.id);
+    if (shapeIds.isEmpty) return;
+
+    final shapeId = shapeIds.first;
+    final shapes = await GtfsRepository.getShapesByRouteShapeId(
+        widget.gtfsFile.id, shapeId);
+    if (shapes.isEmpty) return;
+
+    final points =
+        shapes.map((s) => LatLng(s.shapePtLat, s.shapePtLon)).toList();
+
+    if (!mounted) return;
+    ref.read(shapeEditorProvider.notifier).startEditing(
+          gtfsFileId: widget.gtfsFile.id,
+          shapeId: shapeId,
+          points: points,
+          routeColor: hexToColor(widget.route.routeColor),
+          routeName: widget.route.displayName,
+        );
+
+    // Center map on the shape
+    final mapController = ref.read(mapControllerProvider);
+    final avgLat =
+        points.map((p) => p.latitude).reduce((a, b) => a + b) / points.length;
+    final avgLon =
+        points.map((p) => p.longitude).reduce((a, b) => a + b) / points.length;
+    mapController.move(LatLng(avgLat, avgLon), mapController.camera.zoom);
+  }
+
   void _showContextMenu(BuildContext context, Offset globalPosition) async {
     final hasShapes = _hasShapes ?? true;
     final items = <PopupMenuEntry<String>>[
@@ -628,7 +660,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           Text('Centrar mapa', style: TextStyle(fontSize: 12)),
         ]),
       ),
-      if (!hasShapes) ...[
+      if (!hasShapes) ...[        
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'generate_shapes',
@@ -644,6 +676,18 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
             const SizedBox(width: 8),
             const Text('Generar shapes desde paradas',
                 style: TextStyle(fontSize: 12, color: AppTheme.primary)),
+          ]),
+        ),
+      ],
+      if (hasShapes) ...[        
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'edit_shape',
+          child: const Row(children: [
+            Icon(Icons.edit_road, size: 14, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('Editar shape',
+                style: TextStyle(fontSize: 12, color: Colors.orange)),
           ]),
         ),
       ],
@@ -667,6 +711,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       await _centerMapOnRoute();
     } else if (result == 'generate_shapes') {
       await _generateShapes(context);
+    } else if (result == 'edit_shape') {
+      await _startEditingShape();
     }
   }
 

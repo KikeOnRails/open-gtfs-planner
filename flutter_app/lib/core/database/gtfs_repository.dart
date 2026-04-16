@@ -1,3 +1,4 @@
+import 'package:latlong2/latlong.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../database/app_database.dart';
@@ -757,5 +758,33 @@ class GtfsRepository {
     final s = v.toString().trim();
     if (s == '1' || s.toLowerCase() == 'true') return 1;
     return 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Shape editing
+  // -------------------------------------------------------------------------
+
+  /// Replace all shape points for [shapeId] with the new [points] list.
+  static Future<void> updateShapePoints(
+      int gtfsFileId, String shapeId, List<LatLng> points) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      await txn.delete(
+        'gtfs_shapes',
+        where: 'gtfs_file_id = ? AND shape_id = ?',
+        whereArgs: [gtfsFileId, shapeId],
+      );
+      final batch = txn.batch();
+      for (int i = 0; i < points.length; i++) {
+        batch.insert('gtfs_shapes', {
+          'gtfs_file_id': gtfsFileId,
+          'shape_id': shapeId,
+          'shape_pt_lat': points[i].latitude,
+          'shape_pt_lon': points[i].longitude,
+          'shape_pt_sequence': i + 1,
+        });
+      }
+      await batch.commit(noResult: true);
+    });
   }
 }
