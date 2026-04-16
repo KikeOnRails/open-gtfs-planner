@@ -32,8 +32,10 @@ class _MainScreenState extends ConsumerState<MainScreen> {
   @override
   void initState() {
     super.initState();
-    // Load project if not already set
+    // Reset all visibility/selection state on every project entry
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _resetProjectState();
+
       final current = ref.read(currentProjectProvider);
       if (current?.id != widget.projectId) {
         // Try to find from list
@@ -51,6 +53,20 @@ class _MainScreenState extends ConsumerState<MainScreen> {
         _fitMapToGtfsBounds();
       }
     });
+  }
+
+  /// Clears all per-project UI state so it doesn't leak between projects.
+  void _resetProjectState() {
+    ref.read(gtfsFileVisibilityProvider.notifier).clearAll();
+    ref.read(routeShapeVisibilityProvider.notifier).clearAll();
+    ref.read(gtfsStopsVisibilityProvider.notifier).clearAll();
+    ref.read(routeSimulationVisibilityProvider.notifier).clearAll();
+    ref.read(routeStopsVisibilityProvider.notifier).clearAll();
+    ref.read(agencyVisibilityProvider.notifier).clearAll();
+    ref.read(selectedStopProvider.notifier).state = null;
+    ref.read(selectedTripProvider.notifier).state = null;
+    ref.invalidate(activeServicesProvider);
+    ref.invalidate(activeTripsProvider);
   }
 
   Future<void> _fitMapToGtfsBounds() async {

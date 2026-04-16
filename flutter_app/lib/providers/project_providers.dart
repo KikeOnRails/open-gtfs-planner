@@ -145,6 +145,10 @@ class MapNotifier<K, V> extends StateNotifier<Map<K, V>> {
     copy.remove(key);
     state = copy;
   }
+
+  void clearAll() {
+    state = {};
+  }
 }
 
 // ---------------------------------------------------------------------------
