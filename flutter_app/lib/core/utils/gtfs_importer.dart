@@ -276,7 +276,9 @@ class GtfsImporter {
           'trip_headsign': row['trip_headsign'],
           'direction_id': int.tryParse(row['direction_id']?.toString() ?? ''),
           'block_id': row['block_id'],
-          'shape_id': row['shape_id'],
+          'shape_id': (row['shape_id']?.toString().isEmpty ?? true)
+              ? null
+              : row['shape_id'],
         });
       }
       final ids = await batch.commit();

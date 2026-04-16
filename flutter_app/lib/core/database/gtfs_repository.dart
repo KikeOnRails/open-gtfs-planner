@@ -1,6 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 
 import '../database/app_database.dart';
+import '../services/osrm_service.dart';
 import '../../models/gtfs_models.dart';
 import '../../models/project_model.dart';
 
@@ -352,11 +353,11 @@ class GtfsRepository {
     final rows = await db.rawQuery('''
       SELECT DISTINCT shape_id 
       FROM gtfs_trips 
-      WHERE route_db_id = ? AND shape_id IS NOT NULL
+      WHERE route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ''
     ''', [routeDbId]);
     return rows
         .map((row) => row['shape_id'] as String?)
-        .where((id) => id != null)
+        .where((id) => id != null && id.isNotEmpty)
         .cast<String>()
         .toList();
   }
@@ -526,7 +527,9 @@ class GtfsRepository {
           'trip_headsign': row['trip_headsign'],
           'direction_id': int.tryParse(row['direction_id']?.toString() ?? ''),
           'block_id': row['block_id'],
-          'shape_id': row['shape_id'],
+          'shape_id': (row['shape_id']?.toString().isEmpty ?? true)
+              ? null
+              : row['shape_id'],
         });
       }
       await batch.commit(noResult: true);
@@ -632,6 +635,113 @@ class GtfsRepository {
       }
       await batch.commit(noResult: true);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Shape generation from stops
+  // -------------------------------------------------------------------------
+
+  /// Checks whether a route already has at least one shape point.
+  static Future<bool> routeHasShapes(int routeDbId) async {
+    final shapeIds = await getShapeIdsByRoute(routeDbId);
+    return shapeIds.isNotEmpty;
+  }
+
+  /// Generates shapes for a route from its stop sequences, routing each
+  /// segment through the road network via OSRM.
+  ///
+  /// For each unique ordered stop sequence found in the route's trips,
+  /// creates a new shape whose points follow the road geometry.
+  /// Updates all matching trips to reference the generated shape_id.
+  ///
+  /// Returns the number of distinct shapes inserted.
+  static Future<int> generateShapesFromStops(
+      int gtfsFileId, int routeDbId) async {
+    final db = await _db;
+
+    // 1. Fetch all trips for this route
+    final tripRows = await db.query(
+      'gtfs_trips',
+      where: 'gtfs_file_id = ? AND route_db_id = ?',
+      whereArgs: [gtfsFileId, routeDbId],
+    );
+    if (tripRows.isEmpty) return 0;
+
+    // 2. For each trip, build the ordered list of stop coordinates
+    final Map<String, List<int>> patternToTripIds = {};
+    final Map<String, List<Map<String, dynamic>>> patternToStopRows = {};
+
+    for (final tripRow in tripRows) {
+      final tripDbId = tripRow['id'] as int;
+
+      final stRows = await db.rawQuery('''
+        SELECT st.stop_sequence, s.stop_lat, s.stop_lon
+        FROM gtfs_stop_times st
+        INNER JOIN gtfs_stops s ON st.stop_db_id = s.id
+        WHERE st.trip_db_id = ?
+        ORDER BY st.stop_sequence ASC
+      ''', [tripDbId]);
+
+      if (stRows.isEmpty) continue;
+
+      // Use stop lat/lon sequence as pattern key (rounded to 5 dp)
+      final key = stRows
+          .map((r) =>
+              '${(r['stop_lat'] as num).toStringAsFixed(5)},${(r['stop_lon'] as num).toStringAsFixed(5)}')
+          .join('|');
+
+      patternToTripIds.putIfAbsent(key, () => []).add(tripDbId);
+      patternToStopRows.putIfAbsent(key, () => stRows.cast());
+    }
+
+    if (patternToStopRows.isEmpty) return 0;
+
+    int shapesInserted = 0;
+
+    // 3. For each unique pattern, get road geometry via OSRM, then insert
+    for (final entry in patternToStopRows.entries) {
+      final pattern = entry.key;
+      final stops = entry.value;
+      final shapeId = 'generated_${routeDbId}_${shapesInserted + 1}';
+
+      // Build waypoints list
+      final waypoints = stops
+          .map((s) => (
+                (s['stop_lat'] as num).toDouble(),
+                (s['stop_lon'] as num).toDouble(),
+              ))
+          .toList();
+
+      // Request road-following geometry from OSRM
+      final roadPoints = await OsrmService.getRouteGeometry(waypoints);
+
+      // Insert shape points from the road geometry
+      final batch = db.batch();
+      for (var seq = 0; seq < roadPoints.length; seq++) {
+        final pt = roadPoints[seq];
+        batch.insert('gtfs_shapes', {
+          'gtfs_file_id': gtfsFileId,
+          'shape_id': shapeId,
+          'shape_pt_lat': pt.$1,
+          'shape_pt_lon': pt.$2,
+          'shape_pt_sequence': seq + 1,
+        });
+      }
+
+      // Update all trips with this pattern to use the generated shape_id
+      for (final tripDbId in patternToTripIds[pattern]!) {
+        batch.update(
+          'gtfs_trips',
+          {'shape_id': shapeId},
+          where: 'id = ?',
+          whereArgs: [tripDbId],
+        );
+      }
+
+      await batch.commit(noResult: true);
+      shapesInserted++;
+    }
+    return shapesInserted;
   }
 
   static String _parseGtfsDate(String raw) {

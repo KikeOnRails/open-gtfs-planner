@@ -498,108 +498,307 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
   }
 }
 
-class _RouteLayer extends ConsumerWidget {
+class _RouteLayer extends ConsumerStatefulWidget {
   final RouteModel route;
   final GtfsFileModel gtfsFile;
   const _RouteLayer({required this.route, required this.gtfsFile});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_RouteLayer> createState() => _RouteLayerState();
+}
+
+class _RouteLayerState extends ConsumerState<_RouteLayer> {
+  // null = not yet loaded, true/false = has/no shapes
+  bool? _hasShapes;
+  bool _generating = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkShapes();
+  }
+
+  Future<void> _checkShapes() async {
+    final has = await GtfsRepository.routeHasShapes(widget.route.id);
+    if (mounted) setState(() => _hasShapes = has);
+  }
+
+  Future<void> _generateShapes(BuildContext context) async {
+    setState(() => _generating = true);
+
+    // Show a persistent snackbar with progress info
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          backgroundColor: const Color(0xFF1E2129),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          duration: const Duration(minutes: 2),
+          content: Row(children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2.5, color: AppTheme.primary),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                'Generando shapes para ${widget.route.displayName} siguiendo el viario…',
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+            ),
+          ]),
+        ),
+      );
+
+    try {
+      final count = await GtfsRepository.generateShapesFromStops(
+          widget.gtfsFile.id, widget.route.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      // Invalidate the map shape cache so it reloads from DB
+      ref.read(routeShapeVisibilityProvider.notifier).remove(widget.route.id);
+      ref.invalidate(activeTripsProvider);
+      // Signal MapWidget to clear its local shapes cache
+      ref.read(shapeCacheVersionProvider.notifier).state++;
+      setState(() {
+        _hasShapes = count > 0;
+        _generating = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          backgroundColor: count > 0 ? AppTheme.primaryDark : Colors.orange[800],
+          content: Row(children: [
+            Icon(count > 0 ? Icons.check_circle_outline : Icons.warning_amber_rounded,
+                color: Colors.white, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                count > 0
+                    ? '$count trayecto${count != 1 ? 's' : ''} generado${count != 1 ? 's' : ''} siguiendo el viario'
+                    : 'No se encontraron paradas para generar shapes',
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+            ),
+          ]),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      setState(() => _generating = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          backgroundColor: Colors.red[800],
+          content: Row(children: [
+            const Icon(Icons.error_outline, color: Colors.white, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Error al generar shapes: $e',
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+            ),
+          ]),
+        ),
+      );
+    }
+  }
+
+  void _showContextMenu(BuildContext context, Offset globalPosition) async {
+    final hasShapes = _hasShapes ?? true;
+    final items = <PopupMenuEntry<String>>[
+      PopupMenuItem<String>(
+        value: 'center',
+        child: const Row(children: [
+          Icon(Icons.center_focus_strong_outlined, size: 14),
+          SizedBox(width: 8),
+          Text('Centrar mapa', style: TextStyle(fontSize: 12)),
+        ]),
+      ),
+      if (!hasShapes) ...[
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'generate_shapes',
+          child: Row(children: [
+            _generating
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: AppTheme.primary))
+                : const Icon(Icons.route_outlined,
+                    size: 14, color: AppTheme.primary),
+            const SizedBox(width: 8),
+            const Text('Generar shapes desde paradas',
+                style: TextStyle(fontSize: 12, color: AppTheme.primary)),
+          ]),
+        ),
+      ],
+    ];
+
+    final result = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        globalPosition.dx + 1,
+        globalPosition.dy + 1,
+      ),
+      color: AppTheme.surfaceVariant,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      items: items,
+    );
+
+    if (!mounted) return;
+    if (result == 'center') {
+      await _centerMapOnRoute();
+    } else if (result == 'generate_shapes') {
+      await _generateShapes(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final shapeVis = ref.watch(routeShapeVisibilityProvider);
     final simVis = ref.watch(routeSimulationVisibilityProvider);
     final stopsVis = ref.watch(routeStopsVisibilityProvider);
 
-    final showShape = shapeVis[route.id] ?? false;
-    final showSim = simVis[route.id] ?? false;
-    final showStops = stopsVis[route.id] ?? false;
+    final showShape = shapeVis[widget.route.id] ?? false;
+    final showSim = simVis[widget.route.id] ?? false;
+    final showStops = stopsVis[widget.route.id] ?? false;
+    final hasShapes = _hasShapes ?? true;
 
-    final routeColor = hexToColor(route.routeColor);
+    final routeColor = hexToColor(widget.route.routeColor);
 
-    return Padding(
-      padding: const EdgeInsets.only(left: 44, right: 12, top: 3, bottom: 3),
-      child: Row(
-        children: [
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(
-              color: routeColor,
-              shape: BoxShape.circle,
+    return GestureDetector(
+      onSecondaryTapUp: (details) =>
+          _showContextMenu(context, details.globalPosition),
+      child: Padding(
+        padding:
+            const EdgeInsets.only(left: 44, right: 12, top: 3, bottom: 3),
+        child: Row(
+          children: [
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: routeColor,
+                shape: BoxShape.circle,
+              ),
             ),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: InkWell(
-              onTap: () => _centerMapOnRoute(ref),
-              borderRadius: BorderRadius.circular(4),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
-                child: Text(
-                  route.displayName,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppTheme.onSurface,
+            const SizedBox(width: 6),
+            Expanded(
+              child: InkWell(
+                onTap: () => _centerMapOnRoute(),
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 2, horizontal: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          widget.route.displayName,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppTheme.onSurface,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      // Indicator when route has no shapes
+                      if (!hasShapes)
+                        Tooltip(
+                          message:
+                              'Sin shapes — click derecho para generar',
+                          child: Icon(
+                            Icons.warning_amber_rounded,
+                            size: 11,
+                            color: Colors.orange.withOpacity(0.7),
+                          ),
+                        ),
+                    ],
                   ),
-                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
-          ),
-          // Shape visibility
-          _SmallIconButton(
-            icon: Icons.route_outlined,
-            active: showShape,
-            tooltip: showShape ? 'Ocultar recorrido' : 'Mostrar recorrido',
-            onTap: () async {
-              if (showShape) {
-                // Si está visible, lo quitamos del mapa para volver al estado por defecto
-                ref.read(routeShapeVisibilityProvider.notifier).remove(route.id);
-              } else {
-                // Si no está visible, lo marcamos como visible
-                ref.read(routeShapeVisibilityProvider.notifier).set(route.id, true);
-                // Centramos el mapa
-                await _centerMapOnRoute(ref);
-              }
-            },
-          ),
-          const SizedBox(width: 2),
-          // Stops visibility
-          _SmallIconButton(
-            icon: Icons.location_on_outlined,
-            active: showStops,
-            tooltip: showStops ? 'Ocultar paradas' : 'Mostrar paradas',
-            onTap: () {
-              ref
-                  .read(routeStopsVisibilityProvider.notifier)
-                  .set(route.id, !showStops);
-            },
-          ),
-          const SizedBox(width: 2),
-          // Simulation visibility
-          _SmallIconButton(
-            icon: Icons.directions_bus_outlined,
-            active: showSim,
-            tooltip: showSim ? 'Ocultar simulación' : 'Activar simulación',
-            onTap: () {
-              ref
-                  .read(routeSimulationVisibilityProvider.notifier)
-                  .set(route.id, !showSim);
-              // Reload active trips
-              ref.invalidate(activeTripsProvider);
-            },
-          ),
-        ],
+            // Shape visibility (disabled if no shapes)
+            _SmallIconButton(
+              icon: Icons.route_outlined,
+              active: showShape,
+              tooltip: !hasShapes
+                  ? 'Sin shapes (click derecho para generar)'
+                  : showShape
+                      ? 'Ocultar recorrido'
+                      : 'Mostrar recorrido',
+              onTap: () async {
+                if (!hasShapes) return;
+                if (showShape) {
+                  ref
+                      .read(routeShapeVisibilityProvider.notifier)
+                      .remove(widget.route.id);
+                } else {
+                  ref
+                      .read(routeShapeVisibilityProvider.notifier)
+                      .set(widget.route.id, true);
+                  await _centerMapOnRoute();
+                }
+              },
+            ),
+            const SizedBox(width: 2),
+            // Stops visibility
+            _SmallIconButton(
+              icon: Icons.location_on_outlined,
+              active: showStops,
+              tooltip:
+                  showStops ? 'Ocultar paradas' : 'Mostrar paradas',
+              onTap: () {
+                ref
+                    .read(routeStopsVisibilityProvider.notifier)
+                    .set(widget.route.id, !showStops);
+              },
+            ),
+            const SizedBox(width: 2),
+            // Simulation visibility
+            _SmallIconButton(
+              icon: Icons.directions_bus_outlined,
+              active: showSim,
+              tooltip: showSim
+                  ? 'Ocultar simulación'
+                  : 'Activar simulación',
+              onTap: () {
+                ref
+                    .read(routeSimulationVisibilityProvider.notifier)
+                    .set(widget.route.id, !showSim);
+                ref.invalidate(activeTripsProvider);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Future<void> _centerMapOnRoute(WidgetRef ref) async {
+  Future<void> _centerMapOnRoute() async {
     final mapController = ref.read(mapControllerProvider);
 
     // Get shapes for this route
     final shapes = await GtfsRepository.getShapesByRoute(
-      gtfsFile.id,
-      route.id,
+      widget.gtfsFile.id,
+      widget.route.id,
     );
 
     if (shapes.isEmpty) return;
@@ -617,7 +816,6 @@ class _RouteLayer extends ConsumerWidget {
       if (shape.shapePtLon > maxLon) maxLon = shape.shapePtLon;
     }
 
-    // Fit bounds with padding
     final bounds = LatLngBounds(
       LatLng(minLat, minLon),
       LatLng(maxLat, maxLon),

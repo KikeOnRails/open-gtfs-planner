@@ -22,6 +22,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   late MapController _mapController;
   // Cache for shapes: gtfsFileId -> shape_id -> List<LatLng>
   final Map<int, Map<String, List<LatLng>>> _shapesCache = {};
+  int _lastShapeCacheVersion = 0;
   // Cache for stops per file
   final Map<int, List<StopModel>> _stopsCache = {};
   // Cache para mapear shape_id -> route (para obtener colores)
@@ -54,6 +55,15 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final activeTripsAsync = ref.watch(activeTripsProvider);
     final simVis = ref.watch(routeSimulationVisibilityProvider);
     final selectedTrip = ref.watch(selectedTripProvider);
+
+    // Watch shape cache version — when it changes, clear the local cache so
+    // newly generated shapes are reloaded from the database.
+    final shapeCacheVersion = ref.watch(shapeCacheVersionProvider);
+    if (_lastShapeCacheVersion != shapeCacheVersion) {
+      _lastShapeCacheVersion = shapeCacheVersion;
+      _shapesCache.clear();
+      _shapeToRouteCache.clear();
+    }
 
     // Load shapes and stops reactively
     _preloadLayerData(gtfsFiles, shapeVis, stopsVis);
