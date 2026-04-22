@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../models/gtfs_models.dart';
 import '../../../providers/simulation_providers.dart';
+import 'transfer_review_dialog.dart';
 
 class StopInfoPanel extends ConsumerWidget {
   const StopInfoPanel({super.key});
@@ -25,6 +26,38 @@ class StopInfoPanel extends ConsumerWidget {
             subtitle: 'Parada · ID ${stop.stopId}',
             onClose: () =>
                 ref.read(selectedStopProvider.notifier).state = null,
+          ),
+          // Transfer review action
+          InkWell(
+            onTap: () => showTransferReviewDialog(context, ref, stop),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: AppTheme.primary.withOpacity(0.07),
+                border: const Border(
+                  bottom: BorderSide(color: Color(0xFF2E3340), width: 1),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.transfer_within_a_station,
+                      size: 14, color: AppTheme.primary),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Revisión de transbordos',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppTheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right,
+                      size: 14, color: AppTheme.primary),
+                ],
+              ),
+            ),
           ),
           const Divider(height: 1),
           const _NextArrivals(),

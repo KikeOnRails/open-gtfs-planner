@@ -264,6 +264,29 @@ class GtfsRepository {
   }
 
   // -------------------------------------------------------------------------
+  // Routes serving a specific stop (for transfer review)
+  // -------------------------------------------------------------------------
+
+  static Future<List<RouteModel>> getRoutesForStop(
+      int stopDbId, List<String> serviceIds) async {
+    if (serviceIds.isEmpty) return [];
+    final db = await _db;
+    final placeholders = serviceIds.map((_) => '?').join(',');
+    final rows = await db.rawQuery('''
+      SELECT DISTINCT r.id, r.gtfs_file_id, r.agency_db_id, r.route_id,
+             r.route_short_name, r.route_long_name, r.route_type,
+             r.route_color, r.route_text_color, r.route_desc
+      FROM gtfs_routes r
+      INNER JOIN gtfs_trips t ON t.route_db_id = r.id
+      INNER JOIN gtfs_stop_times st ON st.trip_db_id = t.id
+      WHERE st.stop_db_id = ?
+        AND t.service_id IN ($placeholders)
+      ORDER BY r.route_short_name ASC
+    ''', [stopDbId, ...serviceIds]);
+    return rows.map(RouteModel.fromMap).toList();
+  }
+
+  // -------------------------------------------------------------------------
   // Stop Times for a specific stop
   // -------------------------------------------------------------------------
 
@@ -275,7 +298,8 @@ class GtfsRepository {
     final placeholders = serviceIds.map((_) => '?').join(',');
 
     final rows = await db.rawQuery('''
-      SELECT st.*, t.trip_headsign, r.route_short_name, r.route_long_name,
+      SELECT st.*, t.trip_headsign, t.route_db_id,
+             r.id as route_id_pk, r.route_short_name, r.route_long_name,
              r.route_color, r.route_id, t.id as trip_db_id_alias
       FROM gtfs_stop_times st
       INNER JOIN gtfs_trips t ON st.trip_db_id = t.id
@@ -296,7 +320,7 @@ class GtfsRepository {
         tripHeadsign: row['trip_headsign'] as String?,
       );
       trip.route = RouteModel(
-        id: row['route_db_id'] as int? ?? 0,
+        id: row['route_id_pk'] as int? ?? row['route_db_id'] as int? ?? 0,
         gtfsFileId: st.gtfsFileId,
         routeId: row['route_id'] as String,
         routeShortName: row['route_short_name'] as String?,
