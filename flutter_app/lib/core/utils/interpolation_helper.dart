@@ -61,75 +61,142 @@ class InterpolationHelper {
     return 2 * r * math.asin(math.sqrt(a));
   }
 
-  /// Interpolate position along a shape path between two stops
-  /// Uses precomputed shape indices for each stop to avoid direction confusion
-  static (double lat, double lon)? interpolateAlongShape(
+  /// Build cumulative arc-length distances (metres) for each shape vertex.
+  /// Result has the same length as [shapePath], with result[0] == 0.
+  static List<double> buildCumulativeDistances(List<LatLng> shapePath) {
+    final dists = <double>[0.0];
+    for (int i = 1; i < shapePath.length; i++) {
+      dists.add(dists.last + haversineMeters(
+        shapePath[i - 1].latitude, shapePath[i - 1].longitude,
+        shapePath[i].latitude, shapePath[i].longitude,
+      ));
+    }
+    return dists;
+  }
+
+  /// Project [lat]/[lon] onto the shape polyline and return its arc-length
+  /// from the shape start. [searchFromArcLen] is a lower bound to guarantee
+  /// monotonically increasing results across successive stops.
+  static double projectOntoPolyline(
     List<LatLng> shapePath,
-    double prevStopLat,
-    double prevStopLon,
-    double nextStopLat,
-    double nextStopLon,
-    double fraction, {
-    int? prevShapeIndex,
-    int? nextShapeIndex,
+    List<double> cumDist,
+    double lat,
+    double lon, {
+    double searchFromArcLen = 0.0,
+  }) => projectOntoPolylineInWindow(
+    shapePath, cumDist, lat, lon,
+    searchFromArcLen: searchFromArcLen,
+    searchToArcLen: cumDist.last,
+  );
+
+  /// Like [projectOntoPolyline] but restricts the search to the arc-length
+  /// window [searchFromArcLen]..[searchToArcLen].  This prevents snapping to
+  /// a geometrically close but wrong pass on circular/overlapping routes.
+  static double projectOntoPolylineInWindow(
+    List<LatLng> shapePath,
+    List<double> cumDist,
+    double lat,
+    double lon, {
+    required double searchFromArcLen,
+    required double searchToArcLen,
   }) {
-    if (shapePath.isEmpty) return null;
-    if (fraction <= 0) return (prevStopLat, prevStopLon);
-    if (fraction >= 1) return (nextStopLat, nextStopLon);
+    double bestDist = double.infinity;
+    double bestArcLen = searchFromArcLen;
 
-    // If we don't have precomputed indices, fallback to direct interpolation
-    if (prevShapeIndex == null || nextShapeIndex == null) {
-      return null;
-    }
-    
-    // Ensure valid indices
-    if (prevShapeIndex < 0 || nextShapeIndex < 0 || 
-        prevShapeIndex >= shapePath.length || nextShapeIndex >= shapePath.length ||
-        prevShapeIndex >= nextShapeIndex) {
-      return null;
-    }
+    for (int i = 0; i < shapePath.length - 1; i++) {
+      // Skip segments entirely outside the search window
+      if (cumDist[i + 1] < searchFromArcLen) continue;
+      if (cumDist[i] > searchToArcLen) break;
 
-    // Extract the segment of the shape between the two stops
-    final segment = shapePath.sublist(prevShapeIndex, nextShapeIndex + 1);
-    if (segment.length < 2) return null;
-
-    // Calculate cumulative distances along the shape segment
-    final distances = <double>[0.0];
-    double totalDistance = 0.0;
-    
-    for (int i = 1; i < segment.length; i++) {
-      final dist = haversineMeters(
-        segment[i - 1].latitude, segment[i - 1].longitude,
-        segment[i].latitude, segment[i].longitude,
+      final (rawArcLen, perpDist) = _projectOntoSegment(
+        shapePath[i], shapePath[i + 1],
+        cumDist[i], cumDist[i + 1],
+        lat, lon,
       );
-      totalDistance += dist;
-      distances.add(totalDistance);
+
+      // Clamp to the allowed window
+      final projArcLen = rawArcLen.clamp(searchFromArcLen, searchToArcLen);
+
+      if (perpDist < bestDist) {
+        bestDist = perpDist;
+        bestArcLen = projArcLen;
+      }
+    }
+    return bestArcLen;
+  }
+
+  /// Returns (arcLengthAlongSegment, perpendicularDistance) of [lat]/[lon]
+  /// projected onto the segment from [a] to [b].
+  static (double arcLen, double perpDist) _projectOntoSegment(
+    LatLng a,
+    LatLng b,
+    double arcA,
+    double arcB,
+    double lat,
+    double lon,
+  ) {
+    const deg2rad = math.pi / 180;
+    final midLat = (a.latitude + b.latitude) / 2 * deg2rad;
+    final cosLat = math.cos(midLat);
+
+    // Work in a local flat-earth coordinate system (degrees scaled by cosLat)
+    final ax = a.longitude * cosLat;
+    final ay = a.latitude;
+    final bx = b.longitude * cosLat;
+    final by = b.latitude;
+    final px = lon * cosLat;
+    final py = lat;
+
+    final dx = bx - ax;
+    final dy = by - ay;
+    final len2 = dx * dx + dy * dy;
+
+    if (len2 < 1e-20) {
+      return (arcA, haversineMeters(lat, lon, a.latitude, a.longitude));
     }
 
-    if (totalDistance < 1.0) return null; // Too short, use direct interpolation
+    final t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    final tc = t.clamp(0.0, 1.0);
 
-    // Find the target distance along the path
-    final targetDistance = totalDistance * fraction;
+    final projLon = (ax + tc * dx) / cosLat;
+    final projLat = ay + tc * dy;
 
-    // Find the segment containing the target distance
-    for (int i = 1; i < distances.length; i++) {
-      if (targetDistance <= distances[i]) {
-        // Interpolate between points i-1 and i
-        final segmentFraction = (targetDistance - distances[i - 1]) / 
-                                 (distances[i] - distances[i - 1]);
-        
-        return interpolateGeodetic(
-          segment[i - 1].latitude,
-          segment[i - 1].longitude,
-          segment[i].latitude,
-          segment[i].longitude,
-          segmentFraction,
-        );
+    return (
+      arcA + tc * (arcB - arcA),
+      haversineMeters(lat, lon, projLat, projLon),
+    );
+  }
+
+  /// Return the [LatLng] at a given arc-length along [shapePath].
+  static LatLng pointAtArcLength(
+    List<LatLng> shapePath,
+    List<double> cumDist,
+    double arcLen,
+  ) {
+    if (arcLen <= 0) return shapePath.first;
+    if (arcLen >= cumDist.last) return shapePath.last;
+
+    // Binary search for the enclosing segment
+    int lo = 0, hi = shapePath.length - 1;
+    while (lo < hi - 1) {
+      final mid = (lo + hi) ~/ 2;
+      if (cumDist[mid] <= arcLen) {
+        lo = mid;
+      } else {
+        hi = mid;
       }
     }
 
-    // Fallback to last point
-    return (segment.last.latitude, segment.last.longitude);
+    final segLen = cumDist[hi] - cumDist[lo];
+    if (segLen < 1e-10) return shapePath[lo];
+
+    final t = (arcLen - cumDist[lo]) / segLen;
+    final result = interpolateGeodetic(
+      shapePath[lo].latitude, shapePath[lo].longitude,
+      shapePath[hi].latitude, shapePath[hi].longitude,
+      t,
+    );
+    return LatLng(result.$1, result.$2);
   }
   
   /// Precompute shape indices for all stops in a trip
@@ -214,7 +281,8 @@ class InterpolationHelper {
     final indices = <int>[];
     int searchStartIndex = startSearchFrom;
     
-    for (final stop in stopCoords) {
+    for (int stopIdx = 0; stopIdx < stopCoords.length; stopIdx++) {
+      final stop = stopCoords[stopIdx];
       int bestIndex = searchStartIndex;
       double minDist = double.infinity;
       
@@ -237,6 +305,9 @@ class InterpolationHelper {
       }
       
       indices.add(bestIndex);
+      
+      // Allow the next stop to map to the same index (non-strictly increasing).
+      // Equal indices are handled by the arc-length interpolation in _getTripPosition.
       searchStartIndex = bestIndex;
     }
     

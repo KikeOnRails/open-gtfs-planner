@@ -24,6 +24,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   late MapController _mapController;
   // Cache for shapes: gtfsFileId -> shape_id -> List<LatLng>
   final Map<int, Map<String, List<LatLng>>> _shapesCache = {};
+  // Cache of cumulative arc-length distances per shape (for polyline projection)
+  final Map<int, Map<String, List<double>>> _shapeCumDistCache = {};
   int _lastShapeCacheVersion = 0;
   // Cache for stops per file
   final Map<int, List<StopModel>> _stopsCache = {};
@@ -64,7 +66,19 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     if (_lastShapeCacheVersion != shapeCacheVersion) {
       _lastShapeCacheVersion = shapeCacheVersion;
       _shapesCache.clear();
+      _shapeCumDistCache.clear();
       _shapeToRouteCache.clear();
+      // Synchronously reset shapeIndicesForStops on ALL known trips so they
+      // are unconditionally recomputed against the new shape geometry.
+      // This runs in the same frame as the cache clear, before any
+      // async reload can complete — eliminating all race conditions.
+      final knownTrips = ref.read(activeTripsProvider).valueOrNull;
+      if (knownTrips != null) {
+        for (final trip in knownTrips) {
+          trip.shapeIndicesForStops = null;
+          trip.shapeArcLengthsForStops = null;
+        }
+      }
     }
 
     final editState = ref.watch(shapeEditorProvider);
@@ -78,6 +92,13 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         initialCenter: const LatLng(40.4168, -3.7038), // Madrid
         initialZoom: 13,
         onTap: (_, pos) => _handleMapTap(pos, simDateTime),
+        // Disable map pan/zoom while the user is dragging a shape point
+        // so the map doesn't compete for the pointer event.
+        interactionOptions: InteractionOptions(
+          flags: (editState?.isDraggingPoint == true)
+              ? InteractiveFlag.none
+              : InteractiveFlag.all,
+        ),
       ),
       children: [
         // OSM Tile Layer
@@ -149,14 +170,26 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   }
 
   Widget _buildEditToolbar(BuildContext context, ShapeEditState editState) {
+    final mode = editState.mode;
+    final notifier = ref.read(shapeEditorProvider.notifier);
+    final isBusy = editState.isSaving;
+
+    // Border colour reflects active mode
+    final borderColor = switch (mode) {
+      ShapeEditMode.delete => Colors.red.withOpacity(0.7),
+      ShapeEditMode.append => Colors.green.withOpacity(0.7),
+      ShapeEditMode.prepend => Colors.blue.withOpacity(0.7),
+      _ => Colors.orange.withOpacity(0.6),
+    };
+
     return Material(
       color: Colors.transparent,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: const Color(0xF01E2129),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.orange.withOpacity(0.6), width: 1.5),
+          border: Border.all(color: borderColor, width: 1.5),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.5),
@@ -166,56 +199,143 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           ],
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
+          // --- Title ---
           const Icon(Icons.edit_road, color: Colors.orange, size: 16),
           const SizedBox(width: 8),
-          Text(
-            'Editando shape${editState.routeName.isNotEmpty ? ': ${editState.routeName}' : ''}',
-            style: const TextStyle(
-                color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '(${editState.points.length} pts)',
-            style:
-                TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 11),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                editState.routeName.isNotEmpty
+                    ? editState.routeName
+                    : 'Editando shape',
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600),
+              ),
+              Text(
+                '${editState.points.length} puntos',
+                style: TextStyle(
+                    color: Colors.white.withOpacity(0.5), fontSize: 10),
+              ),
+            ],
           ),
           const SizedBox(width: 12),
-          // Undo
+          _ToolbarDivider(),
+          const SizedBox(width: 8),
+
+          // --- Mode buttons ---
+          Tooltip(
+            message: 'Modo normal: arrastra puntos, toca el punto medio para insertar',
+            child: _ModeBtn(
+              icon: Icons.open_with,
+              label: 'Mover',
+              active: mode == ShapeEditMode.normal,
+              color: Colors.orange,
+              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.normal),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Tooltip(
+            message: 'Modo borrar: toca un punto para eliminarlo',
+            child: _ModeBtn(
+              icon: Icons.remove_circle_outline,
+              label: 'Borrar',
+              active: mode == ShapeEditMode.delete,
+              color: Colors.red[300]!,
+              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.delete),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Tooltip(
+            message: 'Modo añadir al final: toca el mapa para añadir un punto al final',
+            child: _ModeBtn(
+              icon: Icons.south_east,
+              label: 'Añadir final',
+              active: mode == ShapeEditMode.append,
+              color: Colors.green[400]!,
+              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.append),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Tooltip(
+            message: 'Modo añadir al inicio: toca el mapa para añadir un punto al principio',
+            child: _ModeBtn(
+              icon: Icons.north_west,
+              label: 'Añadir inicio',
+              active: mode == ShapeEditMode.prepend,
+              color: Colors.blue[300]!,
+              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.prepend),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _ToolbarDivider(),
+          const SizedBox(width: 8),
+
+          // --- History ---
           _ToolbarBtn(
             icon: Icons.undo,
             label: 'Deshacer',
-            enabled: editState.canUndo && !editState.isSaving,
+            enabled: editState.canUndo && !isBusy,
             color: Colors.white70,
-            onTap: () => ref.read(shapeEditorProvider.notifier).undo(),
+            onTap: () => notifier.undo(),
           ),
-          const SizedBox(width: 6),
-          // Cancel
+          const SizedBox(width: 4),
+          _ToolbarBtn(
+            icon: Icons.redo,
+            label: 'Rehacer',
+            enabled: editState.canRedo && !isBusy,
+            color: Colors.white70,
+            onTap: () => notifier.redo(),
+          ),
+          const SizedBox(width: 8),
+          _ToolbarDivider(),
+          const SizedBox(width: 8),
+
+          // --- Simplify ---
+          Tooltip(
+            message: 'Simplificar: reduce puntos redundantes (tolerancia ~5 m)',
+            child: _ToolbarBtn(
+              icon: Icons.auto_fix_high,
+              label: 'Simplificar',
+              enabled: editState.points.length > 10 && !isBusy,
+              color: Colors.purple[200]!,
+              onTap: () => _showSimplifyDialog(context, editState),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _ToolbarDivider(),
+          const SizedBox(width: 8),
+
+          // --- Cancel / Save ---
           _ToolbarBtn(
             icon: Icons.close,
             label: 'Cancelar',
-            enabled: !editState.isSaving,
+            enabled: !isBusy,
             color: Colors.red[300]!,
-            onTap: () => ref.read(shapeEditorProvider.notifier).cancel(),
+            onTap: () => notifier.cancel(),
           ),
-          const SizedBox(width: 6),
-          // Save
+          const SizedBox(width: 4),
           _ToolbarBtn(
-            icon: editState.isSaving ? null : Icons.check,
-            label: editState.isSaving ? 'Guardando…' : 'Guardar',
-            enabled: !editState.isSaving,
+            icon: isBusy ? null : Icons.check,
+            label: isBusy ? 'Guardando…' : 'Guardar',
+            enabled: !isBusy,
             color: Colors.green[400]!,
-            loading: editState.isSaving,
+            loading: isBusy,
             onTap: () async {
-              final ok =
-                  await ref.read(shapeEditorProvider.notifier).save();
+              final ok = await notifier.save();
               if (!mounted) return;
-              // Bust map shape cache so the updated shape reloads
+              // Bust shape tile cache so new geometry reloads from DB.
               ref.read(shapeCacheVersionProvider.notifier).state++;
+              // Force trips to reload so shapeIndicesForStops is recomputed
+              // against the updated shape geometry.
+              ref.invalidate(activeTripsProvider);
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                 behavior: SnackBarBehavior.floating,
                 margin: const EdgeInsets.all(16),
-                backgroundColor:
-                    ok ? const Color(0xFF1B6B3A) : Colors.red[800],
+                backgroundColor: ok ? const Color(0xFF1B6B3A) : Colors.red[800],
                 content: Text(
                   ok ? 'Shape guardado correctamente' : 'Error al guardar',
                   style: const TextStyle(color: Colors.white),
@@ -226,6 +346,67 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         ]),
       ),
     );
+  }
+
+  Future<void> _showSimplifyDialog(
+      BuildContext context, ShapeEditState editState) async {
+    double tolerance = 5.0;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1E2129),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          title: const Text('Simplificar shape',
+              style: TextStyle(color: Colors.white, fontSize: 15)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Puntos actuales: ${editState.points.length}',
+                style: const TextStyle(
+                    color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Tolerancia: ${tolerance.toStringAsFixed(0)} m',
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              Slider(
+                value: tolerance,
+                min: 1,
+                max: 50,
+                divisions: 49,
+                activeColor: Colors.purple[300],
+                onChanged: (v) => setS(() => tolerance = v),
+              ),
+              Text(
+                'Cuanto mayor la tolerancia, más puntos se eliminarán.',
+                style: TextStyle(
+                    color: Colors.white.withOpacity(0.4), fontSize: 11),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar',
+                  style: TextStyle(color: Colors.white54)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('Simplificar',
+                  style: TextStyle(color: Colors.purple[300])),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed == true && mounted) {
+      ref.read(shapeEditorProvider.notifier).simplify(tolerance);
+    }
   }
 
   List<Marker> _buildVehicleMarkers(
@@ -365,32 +546,37 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       fraction = (timeCurrent - timePrev) / (timeNext - timePrev);
     }
 
-    // Try to use shape if available with precomputed indices
+    // Try to use shape if available — uses arc-length polyline projection
+    // so it works correctly even for heavily simplified shapes where many
+    // stops may lie between the same two simplified vertices.
     final useShapeInterpolation = ref.read(useShapeInterpolationProvider);
 
     if (useShapeInterpolation &&
         trip.shapeId != null &&
         trip.shapeId!.isNotEmpty) {
       final shapePath = _shapesCache[trip.gtfsFileId]?[trip.shapeId!];
-      final shapeIndices = trip.shapeIndicesForStops;
+      final arcLengths = trip.shapeArcLengthsForStops;
 
       if (shapePath != null &&
-          shapePath.isNotEmpty &&
-          shapeIndices != null &&
-          shapeIndices.length > prevIndex + 1) {
-        final result = InterpolationHelper.interpolateAlongShape(
-          shapePath,
-          prevStop.stopLat,
-          prevStop.stopLon,
-          nextStop.stopLat,
-          nextStop.stopLon,
-          fraction,
-          prevShapeIndex: shapeIndices[prevIndex],
-          nextShapeIndex: shapeIndices[prevIndex + 1],
+          shapePath.length >= 2 &&
+          arcLengths != null &&
+          arcLengths.length > prevIndex + 1) {
+        // Get or compute cumulative arc-length distances (cached per shape)
+        _shapeCumDistCache.putIfAbsent(trip.gtfsFileId, () => {});
+        final cumDist = _shapeCumDistCache[trip.gtfsFileId]!.putIfAbsent(
+          trip.shapeId!,
+          () => InterpolationHelper.buildCumulativeDistances(shapePath),
         );
 
-        if (result != null) {
-          return LatLng(result.$1, result.$2);
+        // Precomputed arc lengths are monotonically increasing (computed with
+        // forward-only projection), so they are unambiguous even for circular
+        // routes where two vertices share the same physical location.
+        final prevArcLen = arcLengths[prevIndex];
+        final nextArcLen = arcLengths[prevIndex + 1];
+
+        if (nextArcLen >= prevArcLen) {
+          final targetArcLen = prevArcLen + (nextArcLen - prevArcLen) * fraction;
+          return InterpolationHelper.pointAtArcLength(shapePath, cumDist, targetArcLen);
         }
       }
     }
@@ -408,33 +594,59 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   }
 
   /// Precompute shape indices for trips that have shapes but no indices yet
+  /// Precompute monotonic arc-length positions for all stops in each trip.
+  /// Runs once per trip+shape combination and stores the result in
+  /// [TripModel.shapeArcLengthsForStops].  Using arc lengths (not vertex
+  /// indices) avoids the ambiguity that affects circular routes, where two
+  /// vertices can share the same physical location.
   void _precomputeShapeIndices(List<TripModel> trips) {
     for (final trip in trips) {
       // Skip if already computed or no shape available
-      if (trip.shapeIndicesForStops != null) continue;
+      if (trip.shapeArcLengthsForStops != null) continue;
       if (trip.shapeId == null || trip.shapeId!.isEmpty) continue;
       if (trip.stopTimes == null || trip.stopTimes!.isEmpty) continue;
 
       final shapePath = _shapesCache[trip.gtfsFileId]?[trip.shapeId!];
       if (shapePath == null || shapePath.isEmpty) continue;
 
-      // Extract stop coordinates
-      final stopCoords = <(double, double)>[];
+      // Get or build cumulative distances
+      _shapeCumDistCache.putIfAbsent(trip.gtfsFileId, () => {});
+      final cumDist = _shapeCumDistCache[trip.gtfsFileId]!.putIfAbsent(
+        trip.shapeId!,
+        () => InterpolationHelper.buildCumulativeDistances(shapePath),
+      );
+
+      // Project each stop onto the polyline with a monotonically increasing
+      // constraint — this correctly handles circular routes.
+      // We also apply a forward search window (maxLookAheadMeters) to avoid
+      // snapping to a geometrically closer but wrong pass on circular/overlapping
+      // routes (e.g. the return leg of a circular route being closer than the
+      // outbound leg for stops in the middle of the route).
+      final totalLength = cumDist.last;
+      // Allow searching up to 20 % of the total shape length ahead, but at
+      // least 500 m and at most 5 km, so we never miss a legitimate jump.
+      final window = (totalLength * 0.20).clamp(500.0, 5000.0);
+
+      final arcLengths = <double>[];
+      double searchFrom = 0.0;
       for (final st in trip.stopTimes!) {
         final stop = st.stop;
-        if (stop != null) {
-          stopCoords.add((stop.stopLat, stop.stopLon));
+        if (stop == null) {
+          arcLengths.add(searchFrom);
+          continue;
         }
+        final searchTo = (searchFrom + window).clamp(0.0, totalLength);
+        final arc = InterpolationHelper.projectOntoPolylineInWindow(
+          shapePath, cumDist,
+          stop.stopLat, stop.stopLon,
+          searchFromArcLen: searchFrom,
+          searchToArcLen: searchTo,
+        );
+        arcLengths.add(arc);
+        searchFrom = arc; // next stop must be at or after this arc position
       }
 
-      if (stopCoords.isEmpty) continue;
-
-      // Compute and store indices
-      trip.shapeIndicesForStops =
-          InterpolationHelper.computeShapeIndicesForStops(
-        shapePath,
-        stopCoords,
-      );
+      trip.shapeArcLengthsForStops = arcLengths;
     }
   }
 
@@ -790,6 +1002,21 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   }
 
   void _handleMapTap(LatLng pos, DateTime simDateTime) {
+    // In shape editor modes, map tap adds/removes points
+    final editState = ref.read(shapeEditorProvider);
+    if (editState != null) {
+      switch (editState.mode) {
+        case ShapeEditMode.append:
+          ref.read(shapeEditorProvider.notifier).appendPoint(pos);
+          return;
+        case ShapeEditMode.prepend:
+          ref.read(shapeEditorProvider.notifier).prependPoint(pos);
+          return;
+        default:
+          break;
+      }
+    }
+
     const threshold = 50.0; // metres
 
     // Check if click is on a stop - deselect if clicking far away
@@ -895,6 +1122,78 @@ class _ToolbarBtn extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mode toggle button (highlighted when active)
+// ---------------------------------------------------------------------------
+
+class _ModeBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool active;
+  final Color color;
+  final VoidCallback? onTap;
+
+  const _ModeBtn({
+    required this.icon,
+    required this.label,
+    required this.active,
+    required this.color,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+          decoration: BoxDecoration(
+            color: active ? color.withOpacity(0.25) : color.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: active ? color : color.withOpacity(0.35),
+              width: active ? 1.5 : 1,
+            ),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 13, color: active ? color : color.withOpacity(0.6)),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: active ? color : color.withOpacity(0.6),
+                fontSize: 11,
+                fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Vertical divider for toolbar
+// ---------------------------------------------------------------------------
+
+class _ToolbarDivider extends StatelessWidget {
+  const _ToolbarDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 1,
+      height: 22,
+      color: Colors.white.withOpacity(0.15),
     );
   }
 }

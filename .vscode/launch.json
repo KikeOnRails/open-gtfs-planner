@@ -2,14 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "type": "node",
+      "name": "Flutter",
+      "type": "dart",
       "request": "launch",
-      "name": "npm run dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen",
-      "skipFiles": ["<node_internals>/**"]
+      "program": "lib/main.dart",
+      "cwd": "./flutter_app"
     }
   ]
 }

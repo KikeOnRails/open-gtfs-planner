@@ -183,8 +183,11 @@ class TripModel {
   DateTime? startDatetime;
   DateTime? endDatetime;
   
-  // Precomputed shape indices for each stop (index in shape path)
-  // This maps each stop to its corresponding position in the shape
+  // Precomputed arc-length positions (metres from shape start) for each stop.
+  // Computed with a monotonic forward projection, so they are always increasing.
+  // Works correctly for circular routes where two vertices share the same location.
+  List<double>? shapeArcLengthsForStops;
+  // Keep old field name for backward compat — now unused, kept to avoid cascade changes
   List<int>? shapeIndicesForStops;
 
   TripModel({
@@ -200,6 +203,7 @@ class TripModel {
     this.route,
     this.stopTimes,
     this.shapeIndicesForStops,
+    this.shapeArcLengthsForStops,
   });
 
   factory TripModel.fromMap(Map<String, dynamic> map) {
