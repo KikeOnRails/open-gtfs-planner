@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../models/gtfs_models.dart';
 import '../../../providers/simulation_providers.dart';
 import 'transfer_review_dialog.dart';
+import 'transfer_sync_dialog.dart';
 
 class StopInfoPanel extends ConsumerWidget {
   const StopInfoPanel({super.key});
@@ -55,6 +56,38 @@ class StopInfoPanel extends ConsumerWidget {
                   ),
                   const Icon(Icons.chevron_right,
                       size: 14, color: AppTheme.primary),
+                ],
+              ),
+            ),
+          ),
+          // Transfer sync action
+          InkWell(
+            onTap: () => showTransferSyncDialog(context, ref, stop),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: const Color(0xFF7C3AED).withOpacity(0.07),
+                border: const Border(
+                  bottom: BorderSide(color: Color(0xFF2E3340), width: 1),
+                ),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.sync_alt_rounded,
+                      size: 14, color: Color(0xFF7C3AED)),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Sincronización de horarios',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF7C3AED),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Icon(Icons.chevron_right,
+                      size: 14, color: Color(0xFF7C3AED)),
                 ],
               ),
             ),
