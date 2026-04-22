@@ -40,6 +40,7 @@ class _TransferStats {
   final int withTransfer;
   final int withoutTransfer;
   final double avgWaitMinutes;
+  final int minWaitMinutes;
   final int maxWaitMinutes;
   final int maxGapMinutes; // longest continuous gap without any transfer
   final double transferPercent;
@@ -51,6 +52,7 @@ class _TransferStats {
     required this.withTransfer,
     required this.withoutTransfer,
     required this.avgWaitMinutes,
+    required this.minWaitMinutes,
     required this.maxWaitMinutes,
     required this.maxGapMinutes,
     required this.transferPercent,
@@ -88,7 +90,7 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
   // Selection state
   RouteModel? _routeA;
   RouteModel? _routeB;
-  int _transferWindowMin = 10;
+  RangeValues _transferWindow = const RangeValues(2, 15);
 
   late TabController _tabController;
 
@@ -116,8 +118,6 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
         _routes = routes;
         _stopTimes = stopTimes;
         _loading = false;
-        if (routes.length >= 1) _routeA = routes.first;
-        if (routes.length >= 2) _routeB = routes[1];
       });
     }
   }
@@ -137,11 +137,15 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
   List<_TransferOption> _findTransfers(StopTimeModel arrival) {
     if (_routeB == null) return [];
     final arrivalDt = arrival.getArrivalTimeInDate(widget.simDateTime);
-    final windowEnd = arrivalDt.add(Duration(minutes: _transferWindowMin));
+    final windowStart = arrivalDt.add(
+        Duration(minutes: _transferWindow.start.round()));
+    final windowEnd = arrivalDt.add(
+        Duration(minutes: _transferWindow.end.round()));
 
     return _timesForRoute(_routeB).where((st) {
       final dep = st.getArrivalTimeInDate(widget.simDateTime);
-      return (dep.isAfter(arrivalDt) || dep.isAtSameMomentAs(arrivalDt)) &&
+      return (dep.isAfter(windowStart) ||
+              dep.isAtSameMomentAs(windowStart)) &&
           dep.isBefore(windowEnd);
     }).map((st) {
       final dep = st.getArrivalTimeInDate(widget.simDateTime);
@@ -157,6 +161,7 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
 
     int withTransfer = 0;
     int totalWait = 0;
+    int minWait = 9999;
     int maxWait = 0;
     final Map<int, int?> waitByHour = {};
 
@@ -178,6 +183,7 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
         bestWaits.add(best);
         withTransfer++;
         totalWait += best;
+        if (best < minWait) minWait = best;
         if (best > maxWait) maxWait = best;
         // keep minimum wait per hour
         final prev = waitByHour[hour];
@@ -213,6 +219,7 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
       withTransfer: withTransfer,
       withoutTransfer: timesA.length - withTransfer,
       avgWaitMinutes: withTransfer > 0 ? totalWait / withTransfer : 0,
+      minWaitMinutes: withTransfer > 0 ? minWait : 0,
       maxWaitMinutes: maxWait,
       maxGapMinutes: maxGap,
       transferPercent:
@@ -384,30 +391,42 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
           ),
           const SizedBox(height: 10),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               const Icon(Icons.timer_outlined,
                   size: 14, color: AppTheme.onSurfaceVariant),
               const SizedBox(width: 6),
-              const Text('Ventana de transbordo:',
+              const Text('Ventana:',
                   style: TextStyle(
                       fontSize: 12, color: AppTheme.onSurfaceVariant)),
               const SizedBox(width: 6),
-              Text('$_transferWindowMin min',
+              RichText(
+                text: TextSpan(
                   style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.primary,
-                  )),
+                      fontSize: 12, fontWeight: FontWeight.bold,
+                      color: AppTheme.primary),
+                  children: [
+                    TextSpan(
+                        text: '${_transferWindow.start.round()} min'),
+                    const TextSpan(
+                        text: ' – ',
+                        style: TextStyle(
+                            color: AppTheme.onSurfaceVariant,
+                            fontWeight: FontWeight.normal)),
+                    TextSpan(
+                        text: '${_transferWindow.end.round()} min'),
+                  ],
+                ),
+              ),
               Expanded(
-                child: Slider(
-                  value: _transferWindowMin.toDouble(),
-                  min: 1,
+                child: RangeSlider(
+                  values: _transferWindow,
+                  min: 0,
                   max: 60,
-                  divisions: 59,
+                  divisions: 60,
                   activeColor: AppTheme.primary,
                   inactiveColor: AppTheme.primary.withOpacity(0.2),
-                  onChanged: (v) =>
-                      setState(() => _transferWindowMin = v.round()),
+                  onChanged: (v) => setState(() => _transferWindow = v),
                 ),
               ),
             ],
@@ -438,12 +457,12 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Stat cards grid
-          _StatsGrid(stats: stats, windowMin: _transferWindowMin),
+          _StatsGrid(stats: stats, windowMin: _transferWindow.end.round()),
           const SizedBox(height: 16),
           // Hourly chart
           _HourlyChart(
             waitByHour: stats.waitByHour,
-            windowMin: _transferWindowMin,
+            windowMin: _transferWindow.end.round(),
             routeA: _routeA!,
             routeB: _routeB!,
           ),
@@ -488,7 +507,8 @@ class _TransferReviewDialogState extends ConsumerState<_TransferReviewDialog>
           routeA: _routeA!,
           routeB: _routeB!,
           simDateTime: widget.simDateTime,
-          windowMin: _transferWindowMin,
+          windowStart: _transferWindow.start.round(),
+          windowEnd: _transferWindow.end.round(),
         );
       },
     );
@@ -508,6 +528,7 @@ class _StatsGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pct = stats.transferPercent;
+    final total = stats.totalExpeditions;
     final pctColor = pct >= 80
         ? const Color(0xFF4CAF50)
         : pct >= 50
@@ -520,18 +541,20 @@ class _StatsGrid extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       mainAxisSpacing: 8,
       crossAxisSpacing: 8,
-      childAspectRatio: 2.0,
+      childAspectRatio: 1.55,
       children: [
         _StatCard(
-          icon: Icons.swap_horiz_rounded,
-          label: 'Transbordos posibles',
-          value: '${stats.withTransfer}',
+          icon: Icons.check_circle_outline_rounded,
+          label: 'Con transbordo',
+          value: '${stats.withTransfer} / $total',
+          subtitle: 'expediciones de A con enlace posible',
           color: AppTheme.primary,
         ),
         _StatCard(
-          icon: Icons.block_outlined,
+          icon: Icons.cancel_outlined,
           label: 'Sin transbordo',
-          value: '${stats.withoutTransfer}',
+          value: '${stats.withoutTransfer} / $total',
+          subtitle: 'expediciones de A sin enlace disponible',
           color: stats.withoutTransfer == 0
               ? const Color(0xFF4CAF50)
               : Colors.redAccent,
@@ -540,6 +563,7 @@ class _StatsGrid extends StatelessWidget {
           icon: Icons.percent_rounded,
           label: 'Cobertura',
           value: '${pct.toStringAsFixed(1)}%',
+          subtitle: 'de las expediciones tienen enlace',
           color: pctColor,
         ),
         _StatCard(
@@ -548,24 +572,33 @@ class _StatsGrid extends StatelessWidget {
           value: stats.withTransfer > 0
               ? '${stats.avgWaitMinutes.toStringAsFixed(1)} min'
               : '—',
+          subtitle: 'tiempo hasta el siguiente bus de B',
           color: AppTheme.onSurface,
         ),
         _StatCard(
-          icon: Icons.arrow_upward_rounded,
-          label: 'Espera máxima',
+          icon: Icons.swap_vert_rounded,
+          label: 'Rango de espera',
           value: stats.withTransfer > 0
-              ? '${stats.maxWaitMinutes} min'
+              ? '${stats.minWaitMinutes}–${stats.maxWaitMinutes} min'
               : '—',
+          subtitle: stats.withTransfer > 0
+              ? (stats.maxWaitMinutes >= windowMin * 0.8
+                  ? 'máximo cerca del límite de la ventana'
+                  : 'mínimo y máximo dentro de la ventana')
+              : null,
           color: stats.maxWaitMinutes >= windowMin * 0.8
               ? Colors.orange
               : AppTheme.onSurface,
         ),
         _StatCard(
           icon: Icons.warning_amber_rounded,
-          label: 'Mayor hueco sin transbordo',
+          label: 'Racha máx. sin enlace',
           value: stats.maxGapMinutes > 0
-              ? '${stats.maxGapMinutes} exp.'
-              : 'Ninguno',
+              ? '${stats.maxGapMinutes} llegadas'
+              : 'Ninguna',
+          subtitle: stats.maxGapMinutes > 0
+              ? 'llegadas consecutivas de A sin transbordo'
+              : 'siempre hay transbordo disponible',
           color: stats.maxGapMinutes >= 3
               ? Colors.redAccent
               : stats.maxGapMinutes > 0
@@ -581,6 +614,7 @@ class _StatCard extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
+  final String? subtitle;
   final Color color;
 
   const _StatCard({
@@ -588,6 +622,7 @@ class _StatCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.color,
+    this.subtitle,
   });
 
   @override
@@ -605,17 +640,15 @@ class _StatCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, size: 13, color: color),
+              Icon(icon, size: 12, color: color),
               const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: AppTheme.onSurfaceVariant,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 2,
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: color.withOpacity(0.85),
+                  letterSpacing: 0.2,
                 ),
               ),
             ],
@@ -623,11 +656,22 @@ class _StatCard extends StatelessWidget {
           Text(
             value,
             style: TextStyle(
-              fontSize: 18,
+              fontSize: 17,
               fontWeight: FontWeight.bold,
               color: color,
             ),
           ),
+          if (subtitle != null)
+            Text(
+              subtitle!,
+              style: const TextStyle(
+                fontSize: 9,
+                color: AppTheme.onSurfaceVariant,
+                height: 1.3,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
         ],
       ),
     );
@@ -946,110 +990,6 @@ class _TransferOption {
 }
 
 // ---------------------------------------------------------------------------
-// Transfer row widget
-// ---------------------------------------------------------------------------
-
-class _TransferRow extends StatelessWidget {
-  final StopTimeModel arrival;
-  final List<_TransferOption> transfers;
-  final RouteModel routeA;
-  final RouteModel routeB;
-  final DateTime simDateTime;
-  final int windowMin;
-
-  const _TransferRow({
-    required this.arrival,
-    required this.transfers,
-    required this.routeA,
-    required this.routeB,
-    required this.simDateTime,
-    required this.windowMin,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colorA = hexToColor(routeA.routeColor);
-    final colorB = hexToColor(routeB.routeColor);
-    final hasTransfer = transfers.isNotEmpty;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: hasTransfer
-            ? AppTheme.primary.withOpacity(0.04)
-            : AppTheme.surfaceVariant.withOpacity(0.4),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: hasTransfer
-              ? AppTheme.primary.withOpacity(0.15)
-              : const Color(0xFF2E3340).withOpacity(0.4),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                _RouteBadge(route: routeA, color: colorA),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    arrival.getHeadsign(),
-                    style: const TextStyle(
-                        fontSize: 12, color: AppTheme.onSurface),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Text(
-                  arrival.arrivalHourMin,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: colorA,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            if (!hasTransfer)
-              Row(
-                children: [
-                  const SizedBox(width: 4),
-                  const Icon(Icons.block,
-                      size: 13, color: AppTheme.onSurfaceVariant),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Sin conexión de ${routeB.displayName} en $windowMin min',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: AppTheme.onSurfaceVariant,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
-                ],
-              )
-            else
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: transfers
-                    .map((t) => _TransferChip(
-                          option: t,
-                          colorB: colorB,
-                          routeB: routeB,
-                        ))
-                    .toList(),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Route badge
 // ---------------------------------------------------------------------------
 
@@ -1080,82 +1020,383 @@ class _RouteBadge extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Transfer chip
+// Transfer row widget
 // ---------------------------------------------------------------------------
 
-class _TransferChip extends StatelessWidget {
-  final _TransferOption option;
-  final Color colorB;
+class _TransferRow extends StatelessWidget {
+  final StopTimeModel arrival;
+  final List<_TransferOption> transfers;
+  final RouteModel routeA;
   final RouteModel routeB;
+  final DateTime simDateTime;
+  final int windowStart;
+  final int windowEnd;
 
-  const _TransferChip({
-    required this.option,
-    required this.colorB,
+  const _TransferRow({
+    required this.arrival,
+    required this.transfers,
+    required this.routeA,
     required this.routeB,
+    required this.simDateTime,
+    required this.windowStart,
+    required this.windowEnd,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isVeryTight = option.waitMinutes <= 2;
-    final borderColor =
-        isVeryTight ? Colors.orange : colorB.withOpacity(0.5);
-    final bgColor = isVeryTight
-        ? Colors.orange.withOpacity(0.08)
-        : colorB.withOpacity(0.08);
+    final colorA = hexToColor(routeA.routeColor);
+    final colorB = hexToColor(routeB.routeColor);
+    final hasTransfer = transfers.isNotEmpty;
+    final arrivalDt = arrival.getArrivalTimeInDate(simDateTime);
+    final arrivalM = arrivalDt.hour * 60 + arrivalDt.minute;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: borderColor),
+        color: hasTransfer
+            ? AppTheme.primary.withOpacity(0.04)
+            : AppTheme.surfaceVariant.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: hasTransfer
+              ? AppTheme.primary.withOpacity(0.15)
+              : const Color(0xFF2E3340).withOpacity(0.4),
+        ),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-            decoration: BoxDecoration(
-              color: colorB,
-              borderRadius: BorderRadius.circular(3),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ---- Header: A badge + headsign + arrival time ----
+            Row(
+              children: [
+                _RouteBadge(route: routeA, color: colorA),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    arrival.getHeadsign(),
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.onSurface),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Text(
+                  arrival.arrivalHourMin,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: colorA,
+                  ),
+                ),
+              ],
             ),
-            child: Text(
-              routeB.displayName,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-              ),
+            const SizedBox(height: 10),
+            // ---- Timeline diagram ----
+            _TransferTimeline(
+              arrivalMinutes: arrivalM,
+              windowStart: windowStart,
+              windowEnd: windowEnd,
+              transfers: transfers,
+              colorA: colorA,
+              colorB: colorB,
+              routeB: routeB,
             ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            option.stopTime.arrivalHourMin,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              color: isVeryTight ? Colors.orange : AppTheme.onSurface,
-            ),
-          ),
-          const SizedBox(width: 4),
-          Text(
-            '(${option.waitMinutes} min)',
-            style: TextStyle(
-              fontSize: 10,
-              color: isVeryTight
-                  ? Colors.orange.withOpacity(0.8)
-                  : AppTheme.onSurfaceVariant,
-            ),
-          ),
-          if (isVeryTight) ...[
-            const SizedBox(width: 3),
-            const Icon(Icons.warning_amber_rounded,
-                size: 12, color: Colors.orange),
           ],
-        ],
+        ),
       ),
     );
   }
 }
 
+// ---------------------------------------------------------------------------
+// Timeline diagram
+// ---------------------------------------------------------------------------
 
+class _TransferTimeline extends StatelessWidget {
+  final int arrivalMinutes;
+  final int windowStart;
+  final int windowEnd;
+  final List<_TransferOption> transfers;
+  final Color colorA;
+  final Color colorB;
+  final RouteModel routeB;
+
+  const _TransferTimeline({
+    required this.arrivalMinutes,
+    required this.windowStart,
+    required this.windowEnd,
+    required this.transfers,
+    required this.colorA,
+    required this.colorB,
+    required this.routeB,
+  });
+
+  static String _fmt(int m) {
+    final h = ((m ~/ 60) % 24).toString().padLeft(2, '0');
+    final min = (m % 60).toString().padLeft(2, '0');
+    return '$h:$min';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasTransfer = transfers.isNotEmpty;
+    final windowSpan = windowEnd == 0 ? 1 : windowEnd;
+
+    return LayoutBuilder(builder: (ctx, constraints) {
+      const leftPad = 20.0;
+      const rightPad = 20.0;
+      const dotR = 5.0;
+      const lineY = 16.0;
+      final totalWidth = constraints.maxWidth;
+      final lineW = totalWidth - leftPad - rightPad;
+
+      // x position for a given minute offset from arrival
+      double xOf(int offsetMin) =>
+          leftPad + (offsetMin / windowSpan).clamp(0.0, 1.0) * lineW;
+
+      final xA = leftPad; // arrival dot always at left anchor
+      final xWindowStart = xOf(windowStart);
+      final xWindowEnd = leftPad + lineW; // right anchor
+
+      // Precompute transfer x positions
+      final xTransfers = transfers
+          .map((t) => xOf(t.waitMinutes))
+          .toList();
+
+      // Build transfer marker widgets
+      final List<Widget> markerWidgets = [];
+      for (int i = 0; i < transfers.length; i++) {
+        final t = transfers[i];
+        final x = xTransfers[i];
+        final isVeryTight = t.waitMinutes <= 2;
+        final dotColor = isVeryTight ? Colors.orange : colorB;
+        final depM = arrivalMinutes + t.waitMinutes;
+        final labelLeft = (x - 16).clamp(leftPad, totalWidth - 48);
+
+        // connector line from A dot to this B dot
+        markerWidgets.add(Positioned(
+          left: xA + dotR,
+          width: x - xA - dotR,
+          top: lineY - 0.5,
+          child: Container(
+            height: 2,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                  colors: [colorA.withOpacity(0.7), dotColor.withOpacity(0.7)]),
+            ),
+          ),
+        ));
+
+        // B dot
+        markerWidgets.add(Positioned(
+          left: x - dotR,
+          top: lineY - dotR,
+          child: Container(
+            width: dotR * 2,
+            height: dotR * 2,
+            decoration: BoxDecoration(
+              color: dotColor,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                    color: dotColor.withOpacity(0.5), blurRadius: 5)
+              ],
+            ),
+          ),
+        ));
+
+        // B badge above dot
+        markerWidgets.add(Positioned(
+          left: labelLeft,
+          top: 0,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: dotColor,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Text(
+                  routeB.displayName,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold),
+                ),
+              ),
+              if (isVeryTight) ...[
+                const SizedBox(width: 2),
+                const Icon(Icons.warning_amber_rounded,
+                    size: 10, color: Colors.orange),
+              ],
+            ],
+          ),
+        ));
+
+        // Time + wait label below dot
+        markerWidgets.add(Positioned(
+          left: labelLeft,
+          top: lineY + dotR + 3,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _fmt(depM),
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  color: dotColor.withOpacity(0.9),
+                ),
+              ),
+              Text(
+                '+${t.waitMinutes} min',
+                style: const TextStyle(
+                    fontSize: 8, color: AppTheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ));
+      }
+
+      return SizedBox(
+        height: 54,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // ---- Full rail (gray) ----
+            Positioned(
+              left: leftPad,
+              width: lineW,
+              top: lineY - 1,
+              child: Container(
+                height: 2,
+                decoration: BoxDecoration(
+                  color: AppTheme.onSurfaceVariant.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+            ),
+
+            // ---- Valid window zone highlight [windowStart, windowEnd] ----
+            Positioned(
+              left: xWindowStart,
+              width: xWindowEnd - xWindowStart,
+              top: lineY - 3,
+              child: Container(
+                height: 6,
+                decoration: BoxDecoration(
+                  color: (hasTransfer ? colorB : AppTheme.onSurfaceVariant)
+                      .withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(
+                    color: (hasTransfer ? colorB : AppTheme.onSurfaceVariant)
+                        .withOpacity(0.18),
+                    width: 1,
+                  ),
+                ),
+              ),
+            ),
+
+            // ---- Window start tick ----
+            if (windowStart > 0)
+              Positioned(
+                left: xWindowStart - 0.5,
+                top: lineY - 5,
+                child: Container(
+                  width: 1,
+                  height: 10,
+                  color: AppTheme.onSurfaceVariant.withOpacity(0.3),
+                ),
+              ),
+
+            // ---- A dot ----
+            Positioned(
+              left: xA - dotR,
+              top: lineY - dotR,
+              child: Container(
+                width: dotR * 2,
+                height: dotR * 2,
+                decoration: BoxDecoration(
+                  color: colorA,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                        color: colorA.withOpacity(0.5), blurRadius: 5)
+                  ],
+                ),
+              ),
+            ),
+
+            // ---- A time label below ----
+            Positioned(
+              left: 0,
+              top: lineY + dotR + 3,
+              child: Text(
+                _fmt(arrivalMinutes),
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  color: colorA.withOpacity(0.85),
+                ),
+              ),
+            ),
+
+            // ---- Transfer markers ----
+            ...markerWidgets,
+
+            // ---- No-transfer label ----
+            if (!hasTransfer)
+              Positioned(
+                left: xWindowStart + 8,
+                right: rightPad,
+                top: lineY - 9,
+                child: Row(
+                  children: [
+                    const Icon(Icons.block,
+                        size: 11,
+                        color: AppTheme.onSurfaceVariant),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        'Sin enlace de ${routeB.displayName}',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: AppTheme.onSurfaceVariant,
+                          fontStyle: FontStyle.italic,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // ---- Window end tick + label ----
+            Positioned(
+              right: rightPad - 4,
+              top: lineY - 5,
+              child: Container(
+                width: 1,
+                height: 10,
+                color: AppTheme.onSurfaceVariant.withOpacity(0.3),
+              ),
+            ),
+            Positioned(
+              right: 0,
+              top: lineY + dotR + 3,
+              child: Text(
+                '+${windowEnd}m',
+                style: const TextStyle(
+                    fontSize: 8, color: AppTheme.onSurfaceVariant),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+}
