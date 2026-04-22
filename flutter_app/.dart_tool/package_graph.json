@@ -11,6 +11,7 @@
         "csv",
         "file_picker",
         "flutter",
+        "flutter_colorpicker",
         "flutter_map",
         "flutter_map_cancellable_tile_provider",
         "flutter_riverpod",
@@ -54,6 +55,13 @@
         "stream_channel",
         "test_api",
         "vector_math"
+      ]
+    },
+    {
+      "name": "flutter_colorpicker",
+      "version": "1.1.0",
+      "dependencies": [
+        "flutter"
       ]
     },
     {

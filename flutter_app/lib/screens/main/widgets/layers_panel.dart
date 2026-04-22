@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../models/gtfs_models.dart';
@@ -490,7 +491,7 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
             ),
             if (_expanded)
               ...agencyRoutes.map(
-                (r) => _RouteLayer(route: r, gtfsFile: widget.gtfsFile),
+                (r) => _RouteLayer(routeId: r.id, gtfsFile: widget.gtfsFile),
               ),
           ],
         );
@@ -500,9 +501,9 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
 }
 
 class _RouteLayer extends ConsumerStatefulWidget {
-  final RouteModel route;
+  final int routeId;
   final GtfsFileModel gtfsFile;
-  const _RouteLayer({required this.route, required this.gtfsFile});
+  const _RouteLayer({required this.routeId, required this.gtfsFile});
 
   @override
   ConsumerState<_RouteLayer> createState() => _RouteLayerState();
@@ -520,12 +521,21 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
   }
 
   Future<void> _checkShapes() async {
-    final has = await GtfsRepository.routeHasShapes(widget.route.id);
+    final has = await GtfsRepository.routeHasShapes(widget.routeId);
     if (mounted) setState(() => _hasShapes = has);
   }
 
   Future<void> _generateShapes(BuildContext context) async {
     setState(() => _generating = true);
+
+    // Get the current route from the provider
+    final routesAsync = ref.read(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    
+    if (route == null) return;
 
     // Show a persistent snackbar with progress info
     ScaffoldMessenger.of(context)
@@ -548,7 +558,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
             const SizedBox(width: 14),
             Expanded(
               child: Text(
-                'Generando shapes para ${widget.route.displayName} siguiendo el viario…',
+                'Generando shapes para ${route.displayName} siguiendo el viario…',
                 style: const TextStyle(color: Colors.white, fontSize: 13),
               ),
             ),
@@ -558,11 +568,11 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
 
     try {
       final count = await GtfsRepository.generateShapesFromStops(
-          widget.gtfsFile.id, widget.route.id);
+          widget.gtfsFile.id, route.id);
       if (!mounted) return;
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
       // Invalidate the map shape cache so it reloads from DB
-      ref.read(routeShapeVisibilityProvider.notifier).remove(widget.route.id);
+      ref.read(routeShapeVisibilityProvider.notifier).remove(route.id);
       ref.invalidate(activeTripsProvider);
       // Signal MapWidget to clear its local shapes cache
       ref.read(shapeCacheVersionProvider.notifier).state++;
@@ -619,8 +629,17 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
   }
 
   Future<void> _startEditingShape() async {
+    // Get the current route from the provider
+    final routesAsync = ref.read(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    
+    if (route == null) return;
+
     final shapeIds =
-        await GtfsRepository.getShapeIdsByRoute(widget.route.id);
+        await GtfsRepository.getShapeIdsByRoute(route.id);
     if (shapeIds.isEmpty) return;
 
     final shapeId = shapeIds.first;
@@ -636,8 +655,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           gtfsFileId: widget.gtfsFile.id,
           shapeId: shapeId,
           points: points,
-          routeColor: hexToColor(widget.route.routeColor),
-          routeName: widget.route.displayName,
+          routeColor: hexToColor(route.routeColor),
+          routeName: route.displayName,
         );
 
     // Center map on the shape
@@ -658,6 +677,15 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           Icon(Icons.center_focus_strong_outlined, size: 14),
           SizedBox(width: 8),
           Text('Centrar mapa', style: TextStyle(fontSize: 12)),
+        ]),
+      ),
+      const PopupMenuDivider(),
+      PopupMenuItem<String>(
+        value: 'change_color',
+        child: const Row(children: [
+          Icon(Icons.color_lens, size: 14, color: Colors.blue),
+          SizedBox(width: 8),
+          Text('Cambiar color', style: TextStyle(fontSize: 12)),
         ]),
       ),
       if (!hasShapes) ...[        
@@ -709,6 +737,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
     if (!mounted) return;
     if (result == 'center') {
       await _centerMapOnRoute();
+    } else if (result == 'change_color') {
+      await _changeRouteColor(context);
     } else if (result == 'generate_shapes') {
       await _generateShapes(context);
     } else if (result == 'edit_shape') {
@@ -716,18 +746,89 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
     }
   }
 
+  Future<void> _changeRouteColor(BuildContext context) async {
+    // Get the current route from the provider
+    final routesAsync = ref.read(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    
+    if (route == null) return;
+
+    Color currentColor = hexToColor(route.routeColor);
+
+    await showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Cambiar color de ${route.displayName}'),
+          content: SingleChildScrollView(
+            child: ColorPicker(
+              pickerColor: currentColor,
+              onColorChanged: (color) {
+                currentColor = color;
+              },
+              pickerAreaHeightPercent: 0.8,
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Cancelar'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text('Guardar'),
+              onPressed: () async {
+                // Convert color to hex string without #
+                final hexString = currentColor.toARGB32().toRadixString(16).substring(2).toUpperCase();
+                await GtfsRepository.updateRouteColor(route.id, hexString);
+                
+                // Refresh the routes provider to update the UI
+                ref.invalidate(routesProvider(widget.gtfsFile.id));
+                
+                // Force reload of active trips to get updated route colors
+                ref.invalidate(activeTripsProvider);
+                
+                // Force map widget to reload shape caches to get updated colors
+                ref.read(shapeCacheVersionProvider.notifier).state++;
+                
+                if (mounted) {
+                  Navigator.of(context).pop();
+                }
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Get the route from the provider
+    final routesAsync = ref.watch(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    
+    if (route == null) {
+      return const SizedBox.shrink(); // Route not found, don't render
+    }
+
     final shapeVis = ref.watch(routeShapeVisibilityProvider);
     final simVis = ref.watch(routeSimulationVisibilityProvider);
     final stopsVis = ref.watch(routeStopsVisibilityProvider);
 
-    final showShape = shapeVis[widget.route.id] ?? false;
-    final showSim = simVis[widget.route.id] ?? false;
-    final showStops = stopsVis[widget.route.id] ?? false;
+    final showShape = shapeVis[route.id] ?? false;
+    final showSim = simVis[route.id] ?? false;
+    final showStops = stopsVis[route.id] ?? false;
     final hasShapes = _hasShapes ?? true;
 
-    final routeColor = hexToColor(widget.route.routeColor);
+    final routeColor = hexToColor(route.routeColor);
 
     return GestureDetector(
       onSecondaryTapUp: (details) =>
@@ -757,7 +858,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
                     children: [
                       Expanded(
                         child: Text(
-                          widget.route.displayName,
+                          route.displayName,
                           style: const TextStyle(
                             fontSize: 11,
                             color: AppTheme.onSurface,
@@ -795,11 +896,11 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
                 if (showShape) {
                   ref
                       .read(routeShapeVisibilityProvider.notifier)
-                      .remove(widget.route.id);
+                      .remove(route.id);
                 } else {
                   ref
                       .read(routeShapeVisibilityProvider.notifier)
-                      .set(widget.route.id, true);
+                      .set(route.id, true);
                   await _centerMapOnRoute();
                 }
               },
@@ -814,7 +915,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
               onTap: () {
                 ref
                     .read(routeStopsVisibilityProvider.notifier)
-                    .set(widget.route.id, !showStops);
+                    .set(route.id, !showStops);
               },
             ),
             const SizedBox(width: 2),
@@ -828,7 +929,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
               onTap: () {
                 ref
                     .read(routeSimulationVisibilityProvider.notifier)
-                    .set(widget.route.id, !showSim);
+                    .set(route.id, !showSim);
                 ref.invalidate(activeTripsProvider);
               },
             ),
@@ -841,10 +942,19 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
   Future<void> _centerMapOnRoute() async {
     final mapController = ref.read(mapControllerProvider);
 
+    // Get the route from the provider
+    final routesAsync = ref.read(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    
+    if (route == null) return;
+
     // Get shapes for this route
     final shapes = await GtfsRepository.getShapesByRoute(
       widget.gtfsFile.id,
-      widget.route.id,
+      route.id,
     );
 
     if (shapes.isEmpty) return;

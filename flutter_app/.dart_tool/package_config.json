@@ -122,6 +122,12 @@
       "languageVersion": "3.8"
     },
     {
+      "name": "flutter_colorpicker",
+      "rootUri": "file:///home/enrique/.pub-cache/hosted/pub.dev/flutter_colorpicker-1.1.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.14"
+    },
+    {
       "name": "flutter_lints",
       "rootUri": "file:///home/enrique/.pub-cache/hosted/pub.dev/flutter_lints-4.0.0",
       "packageUri": "lib/",

@@ -142,6 +142,16 @@ class GtfsRepository {
     return RouteModel.fromMap(rows.first);
   }
 
+  static Future<void> updateRouteColor(int routeId, String? color) async {
+    final db = await _db;
+    await db.update(
+      'gtfs_routes',
+      {'route_color': color},
+      where: 'id = ?',
+      whereArgs: [routeId],
+    );
+  }
+
   // -------------------------------------------------------------------------
   // Stops
   // -------------------------------------------------------------------------

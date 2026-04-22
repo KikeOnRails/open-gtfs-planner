@@ -68,6 +68,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       _shapesCache.clear();
       _shapeCumDistCache.clear();
       _shapeToRouteCache.clear();
+      _routesCache.clear();
+      _routeStopsCache.clear();
       // Synchronously reset shapeIndicesForStops on ALL known trips so they
       // are unconditionally recomputed against the new shape geometry.
       // This runs in the same frame as the cache clear, before any
