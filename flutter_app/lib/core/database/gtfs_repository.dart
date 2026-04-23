@@ -187,6 +187,12 @@ class GtfsRepository {
     return StopModel.fromMap(rows.first);
   }
 
+  /// Deletes a stop and all its dependent stop_times (via ON DELETE CASCADE).
+  static Future<void> deleteStop(int stopId) async {
+    final db = await _db;
+    await db.delete('gtfs_stops', where: 'id = ?', whereArgs: [stopId]);
+  }
+
   /// Merge two stops into one unified stop.
   ///
   /// Creates a new stop in [gtfsFileId] with the given attributes, then

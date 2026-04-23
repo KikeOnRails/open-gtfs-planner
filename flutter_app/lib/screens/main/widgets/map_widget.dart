@@ -13,6 +13,7 @@ import '../../../providers/project_providers.dart';
 import '../../../providers/shape_editor_provider.dart';
 import '../../../providers/simulation_providers.dart';
 import 'merge_stops_dialog.dart';
+import 'create_stop_dialog.dart';
 import 'shape_editor_layer.dart';
 
 class MapWidget extends ConsumerStatefulWidget {
@@ -29,6 +30,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   // Cache of cumulative arc-length distances per shape (for polyline projection)
   final Map<int, Map<String, List<double>>> _shapeCumDistCache = {};
   int _lastShapeCacheVersion = 0;
+  int _lastStopsCacheVersion = 0;
   // Cache for stops per file
   final Map<int, List<StopModel>> _stopsCache = {};
   // Cache para mapear shape_id -> route (para obtener colores)
@@ -62,6 +64,14 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final activeTripsAsync = ref.watch(activeTripsProvider);
     final simVis = ref.watch(routeSimulationVisibilityProvider);
     final selectedTrip = ref.watch(selectedTripProvider);
+
+    // Watch stops cache version — when it changes, clear the local stops cache.
+    final stopsCacheVersion = ref.watch(stopsCacheVersionProvider);
+    if (_lastStopsCacheVersion != stopsCacheVersion) {
+      _lastStopsCacheVersion = stopsCacheVersion;
+      _stopsCache.clear();
+      _routeStopsCache.clear();
+    }
 
     // Watch shape cache version — when it changes, clear the local cache so
     // newly generated shapes are reloaded from the database.
@@ -189,6 +199,78 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           ),
         ),
 
+      // Pick-stop-location mode banner
+      if (ref.watch(pickStopLocationProvider) != null)
+        Positioned(
+          top: 12,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xF01E2129),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.teal.withOpacity(0.7), width: 1.5),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.my_location, size: 14, color: Colors.teal),
+                  const SizedBox(width: 8),
+                  const Text('Toca el mapa para colocar la parada',
+                      style: TextStyle(color: Colors.white, fontSize: 12)),
+                  const SizedBox(width: 12),
+                  InkWell(
+                    onTap: () => ref.read(pickStopLocationProvider.notifier).state = null,
+                    child: const Icon(Icons.close, size: 14, color: Colors.white54),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+        ),
+
+      // Create stop FAB (bottom-left)
+      if (editState == null && ref.watch(pickStopLocationProvider) == null)
+        Positioned(
+          bottom: 56,
+          left: 12,
+          child: Tooltip(
+            message: 'Crear parada: pincha en el mapa para colocarla',
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => activatePickStopMode(context, ref),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xF01E2129),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.teal.withOpacity(0.5), width: 1),
+                    boxShadow: [
+                      BoxShadow(
+                          color: Colors.black.withOpacity(0.4),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2))
+                    ],
+                  ),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.add_location_alt, size: 14, color: Colors.teal),
+                    SizedBox(width: 6),
+                    Text('Nueva parada',
+                        style: TextStyle(
+                            color: Colors.teal,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600)),
+                  ]),
+                ),
+              ),
+            ),
+          ),
+        ),
+
       // Help hint (bottom-right)
       if (editState == null)
         const Positioned(
@@ -265,13 +347,6 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
                     ]),
                   ),
                 );
-                // Invalidate stop caches so new stop appears on map
-                for (final key in _stopsCache.keys.toList()) {
-                  _stopsCache.remove(key);
-                }
-                for (final key in _routeStopsCache.keys.toList()) {
-                  _routeStopsCache.remove(key);
-                }
                 if (mounted) setState(() {});
               }
             },
@@ -1188,6 +1263,13 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   }
 
   void _handleMapTap(LatLng pos, DateTime simDateTime) {
+    // Pick-stop-location mode: deliver the location and exit
+    final pickCallback = ref.read(pickStopLocationProvider);
+    if (pickCallback != null) {
+      pickCallback(pos);
+      return;
+    }
+
     // In shape editor modes, map tap adds/removes points
     final editState = ref.read(shapeEditorProvider);
     if (editState != null) {

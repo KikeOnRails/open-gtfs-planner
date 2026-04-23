@@ -122,6 +122,7 @@ class _MergeStopsDialogState extends State<_MergeStopsDialog> {
 
       // Invalidate stop caches
       widget.ref.invalidate(gtfsFilesProvider);
+      widget.ref.read(stopsCacheVersionProvider.notifier).state++;
 
       if (mounted) Navigator.of(context).pop(merged);
     } catch (e) {

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/database/gtfs_repository.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../models/gtfs_models.dart';
+import '../../../providers/project_providers.dart';
 import '../../../providers/simulation_providers.dart';
 import 'transfer_review_dialog.dart';
 import 'transfer_sync_dialog.dart';
@@ -92,9 +94,96 @@ class StopInfoPanel extends ConsumerWidget {
               ),
             ),
           ),
+          // Delete stop action
+          InkWell(
+            onTap: () => _confirmDeleteStop(context, ref, stop),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.07),
+                border: const Border(
+                  bottom: BorderSide(color: Color(0xFF2E3340), width: 1),
+                ),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.delete_outline, size: 14, color: Colors.redAccent),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Eliminar parada',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.redAccent,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Icon(Icons.chevron_right,
+                      size: 14, color: Colors.redAccent),
+                ],
+              ),
+            ),
+          ),
           const Divider(height: 1),
           const _NextArrivals(),
         ],
+      ),
+    );
+  }
+}
+
+Future<void> _confirmDeleteStop(
+    BuildContext context, WidgetRef ref, StopModel stop) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E2129),
+      title: const Text('Eliminar parada',
+          style: TextStyle(color: Colors.white, fontSize: 15)),
+      content: Text(
+        '¿Eliminar "${stop.displayName}"?\n\nSe eliminarán también todos sus horarios (stop_times).',
+        style: const TextStyle(color: Colors.white70, fontSize: 13),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: const Text('Cancelar',
+              style: TextStyle(color: Colors.white54)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: const Text('Eliminar',
+              style: TextStyle(color: Colors.redAccent)),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true) return;
+
+  await GtfsRepository.deleteStop(stop.id);
+
+  ref.read(selectedStopProvider.notifier).state = null;
+  ref.read(secondSelectedStopProvider.notifier).state = null;
+  ref.invalidate(gtfsFilesProvider);
+  ref.read(stopsCacheVersionProvider.notifier).state++;
+
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        backgroundColor: const Color(0xFF7B1010),
+        content: Row(children: [
+          const Icon(Icons.delete_forever, color: Colors.white, size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Parada "${stop.displayName}" eliminada',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        ]),
       ),
     );
   }
