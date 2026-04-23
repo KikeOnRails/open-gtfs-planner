@@ -12,6 +12,8 @@ import '../../../providers/simulation_providers.dart';
 import '../../../core/database/gtfs_repository.dart';
 import 'create_gtfs_dialog.dart';
 import 'create_route_dialog.dart';
+import 'create_expedicion_dialog.dart';
+import 'expediciones_panel.dart';
 import '../../../providers/route_editor_providers.dart';
 
 class LayersPanel extends ConsumerStatefulWidget {
@@ -707,6 +709,25 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           Text('Cambiar color', style: TextStyle(fontSize: 12)),
         ]),
       ),
+      const PopupMenuDivider(),
+      PopupMenuItem<String>(
+        value: 'new_expedicion',
+        child: const Row(children: [
+          Icon(Icons.departure_board, size: 14, color: Colors.greenAccent),
+          SizedBox(width: 8),
+          Text('Nueva expedición',
+              style: TextStyle(fontSize: 12, color: Colors.greenAccent)),
+        ]),
+      ),
+      PopupMenuItem<String>(
+        value: 'edit_expediciones',
+        child: const Row(children: [
+          Icon(Icons.list_alt, size: 14, color: Colors.greenAccent),
+          SizedBox(width: 8),
+          Text('Editar expediciones',
+              style: TextStyle(fontSize: 12, color: Colors.greenAccent)),
+        ]),
+      ),
       if (!hasShapes) ...[        
         const PopupMenuDivider(),
         PopupMenuItem<String>(
@@ -767,12 +788,59 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       await _centerMapOnRoute();
     } else if (result == 'change_color') {
       await _changeRouteColor(context);
+    } else if (result == 'new_expedicion') {
+      await _newExpedicion(context);
+    } else if (result == 'edit_expediciones') {
+      await _editExpediciones(context);
     } else if (result == 'generate_shapes') {
       await _generateShapes(context);
     } else if (result == 'edit_shape') {
       await _startEditingShape();
     } else if (result == 'delete_route') {
       await _confirmDeleteRoute(context);
+    }
+  }
+
+  Future<void> _editExpediciones(BuildContext context) async {
+    final routesAsync = ref.read(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    if (route == null || !mounted) return;
+    await showExpedicionesPanel(context, ref, route, widget.gtfsFile);
+    if (mounted) ref.invalidate(activeTripsProvider);
+  }
+
+  Future<void> _newExpedicion(BuildContext context) async {
+    final routesAsync = ref.read(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    if (route == null || !mounted) return;
+
+    final count =
+        await showCreateExpedicionDialog(context, route, widget.gtfsFile);
+    if (count > 0 && mounted) {
+      ref.invalidate(activeTripsProvider);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        backgroundColor: const Color(0xFF0D5C47),
+        content: Row(children: [
+          const Icon(Icons.check_circle, color: Colors.white, size: 16),
+          const SizedBox(width: 8),
+          Text(
+            '$count expedición${count != 1 ? 'es' : ''} creada${count != 1 ? 's' : ''} correctamente',
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+          ),
+        ]),
+      ));
     }
   }
 

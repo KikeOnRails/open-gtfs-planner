@@ -571,3 +571,41 @@ class ServiceInfo {
     required this.gtfsFilename,
   });
 }
+
+/// Lightweight summary of a single trip (expedición) for display in the editor.
+class ExpedicionSummary {
+  final int tripDbId;
+  final String serviceId;
+  final String? headsign;
+  final int? directionId;
+  final String? departureTime; // "HH:MM:SS"
+  final String? arrivalTime;   // "HH:MM:SS"
+  final int stopCount;
+
+  const ExpedicionSummary({
+    required this.tripDbId,
+    required this.serviceId,
+    this.headsign,
+    this.directionId,
+    this.departureTime,
+    this.arrivalTime,
+    this.stopCount = 0,
+  });
+
+  /// Returns "HH:MM" from "HH:MM:SS" (or the raw value if unexpected format).
+  static String _hhmm(String? t) {
+    if (t == null) return '--:--';
+    final parts = t.split(':');
+    if (parts.length < 2) return t;
+    return '${parts[0].padLeft(2, '0')}:${parts[1].padLeft(2, '0')}';
+  }
+
+  String get depHHMM => _hhmm(departureTime);
+  String get arrHHMM => _hhmm(arrivalTime);
+
+  String get displayLabel {
+    if (headsign != null && headsign!.isNotEmpty) return headsign!;
+    if (directionId != null) return directionId == 0 ? 'Ida' : 'Vuelta';
+    return '';
+  }
+}

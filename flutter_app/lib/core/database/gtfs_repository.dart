@@ -1013,7 +1013,129 @@ class GtfsRepository {
     return rows.map((r) => ((r['shape_pt_lat'] as num).toDouble(), (r['shape_pt_lon'] as num).toDouble())).toList();
   }
 
-  /// Replace all stops for a pattern.
+  /// Distinct service_ids available in this GTFS file (from calendar + calendar_dates).
+  static Future<List<String>> getServiceIds(int gtfsFileId) async {
+    final db = await _db;
+    final rows = await db.rawQuery('''
+      SELECT DISTINCT service_id FROM (
+        SELECT service_id FROM gtfs_calendar WHERE gtfs_file_id = ?
+        UNION
+        SELECT service_id FROM gtfs_calendar_dates WHERE gtfs_file_id = ?
+      ) ORDER BY service_id ASC
+    ''', [gtfsFileId, gtfsFileId]);
+    return rows.map((r) => r['service_id'] as String).toList();
+  }
+
+  /// Creates one trip + stop_times per departure time derived from [pattern].
+  /// Returns the number of trips inserted.
+  static Future<int> insertExpediciones({
+    required int gtfsFileId,
+    required int routeDbId,
+    required int patternId,
+    required String serviceId,
+    required List<int> departureTimesSeconds,
+  }) async {
+    final patternStops = await getPatternStops(patternId);
+    if (patternStops.isEmpty) {
+      throw Exception('El trayecto no tiene paradas definidas');
+    }
+    final db = await _db;
+    final patternRows = await db.query(
+      'route_patterns',
+      columns: ['shape_id', 'direction_id', 'name'],
+      where: 'id = ?',
+      whereArgs: [patternId],
+    );
+    if (patternRows.isEmpty) throw Exception('Trayecto no encontrado');
+
+    final shapeId = patternRows.first['shape_id'] as String?;
+    final directionId = patternRows.first['direction_id'] as int?;
+    final patternName = patternRows.first['name'] as String?;
+    final base = DateTime.now().millisecondsSinceEpoch;
+
+    for (int idx = 0; idx < departureTimesSeconds.length; idx++) {
+      final depTime = departureTimesSeconds[idx];
+      final timeLabel = _secondsToTimeStr(depTime).replaceAll(':', '');
+      final tripId = 'trip_p${patternId}_${timeLabel}_${base + idx}';
+
+      final tripDbId = await db.insert('gtfs_trips', {
+        'gtfs_file_id': gtfsFileId,
+        'route_db_id': routeDbId,
+        'service_id': serviceId,
+        'trip_id': tripId,
+        'trip_headsign': patternName,
+        'direction_id': directionId,
+        'shape_id': shapeId,
+      });
+
+      final batch = db.batch();
+      for (int i = 0; i < patternStops.length; i++) {
+        final ps = patternStops[i];
+        final absTime = depTime + (ps.timeFromOriginSeconds ?? 0);
+        final timeStr = _secondsToTimeStr(absTime);
+        batch.insert('gtfs_stop_times', {
+          'gtfs_file_id': gtfsFileId,
+          'trip_db_id': tripDbId,
+          'stop_db_id': ps.stopDbId,
+          'arrival_time': timeStr,
+          'departure_time': timeStr,
+          'stop_sequence': i,
+        });
+      }
+      await batch.commit(noResult: true);
+    }
+    return departureTimesSeconds.length;
+  }
+
+  static String _secondsToTimeStr(int totalSeconds) {
+    final h = totalSeconds ~/ 3600;
+    final m = (totalSeconds % 3600) ~/ 60;
+    final s = totalSeconds % 60;
+    return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  /// Returns all trips for a route, with first/last stop times loaded.
+  /// Grouped data: each item has trip + departureTime + arrivalTime + patternName.
+  static Future<List<ExpedicionSummary>> getExpedicionesForRoute(
+      int routeDbId) async {
+    final db = await _db;
+    final rows = await db.rawQuery('''
+      SELECT
+        t.id          AS trip_id,
+        t.service_id,
+        t.trip_headsign,
+        t.direction_id,
+        (SELECT st2.departure_time FROM gtfs_stop_times st2
+         WHERE st2.trip_db_id = t.id ORDER BY st2.stop_sequence ASC LIMIT 1)  AS dep_time,
+        (SELECT st2.arrival_time FROM gtfs_stop_times st2
+         WHERE st2.trip_db_id = t.id ORDER BY st2.stop_sequence DESC LIMIT 1) AS arr_time,
+        (SELECT COUNT(*) FROM gtfs_stop_times st2 WHERE st2.trip_db_id = t.id) AS stop_count
+      FROM gtfs_trips t
+      WHERE t.route_db_id = ?
+      ORDER BY t.service_id ASC, dep_time ASC
+    ''', [routeDbId]);
+
+    return rows.map((r) => ExpedicionSummary(
+          tripDbId: r['trip_id'] as int,
+          serviceId: r['service_id'] as String,
+          headsign: r['trip_headsign'] as String?,
+          directionId: r['direction_id'] as int?,
+          departureTime: r['dep_time'] as String?,
+          arrivalTime: r['arr_time'] as String?,
+          stopCount: (r['stop_count'] as int?) ?? 0,
+        )).toList();
+  }
+
+  /// Deletes a single trip and its stop_times.
+  static Future<void> deleteTrip(int tripDbId) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      await txn.delete('gtfs_stop_times',
+          where: 'trip_db_id = ?', whereArgs: [tripDbId]);
+      await txn.delete('gtfs_trips',
+          where: 'id = ?', whereArgs: [tripDbId]);
+    });
+  }
   static Future<void> savePatternStops(
       int patternId, List<Map<String, dynamic>> stops) async {
     final db = await _db;
