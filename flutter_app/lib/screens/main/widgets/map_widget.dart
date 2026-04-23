@@ -15,6 +15,7 @@ import '../../../providers/simulation_providers.dart';
 import 'merge_stops_dialog.dart';
 import 'create_stop_dialog.dart';
 import 'shape_editor_layer.dart';
+import '../../../providers/route_editor_providers.dart';
 
 class MapWidget extends ConsumerStatefulWidget {
   const MapWidget({super.key});
@@ -101,6 +102,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     // Load shapes and stops reactively
     _preloadLayerData(gtfsFiles, shapeVis, stopsVis);
 
+    // Pattern editor state (for live shape preview and stop-click interception)
+    final patternState = ref.watch(patternEditorProvider);
+
     final map = FlutterMap(
       mapController: _mapController,
       options: MapOptions(
@@ -132,6 +136,22 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
             excludeShapeId: editState?.shapeId,
           ),
         ),
+
+        // Pattern editor: live shape preview
+        if (patternState != null && patternState.shapePoints.isNotEmpty)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: patternState.shapePoints
+                    .map((p) => LatLng(p.$1, p.$2))
+                    .toList(),
+                strokeWidth: 3.5,
+                color: Colors.orangeAccent.withOpacity(0.9),
+                borderColor: Colors.orange.shade900.withOpacity(0.6),
+                borderStrokeWidth: 1.5,
+              ),
+            ],
+          ),
 
         // Stop markers
         MarkerLayer(
@@ -1220,6 +1240,12 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         height: highlight ? 24 : 16,
         child: GestureDetector(
           onTap: () {
+            // If pattern editor is active, add stop to trayecto
+            final patternEditorState = ref.read(patternEditorProvider);
+            if (patternEditorState != null) {
+              ref.read(patternEditorProvider.notifier).addStop(stop);
+              return;
+            }
             final isModifier =
                 HardwareKeyboard.instance.isShiftPressed;
             if (isModifier) {

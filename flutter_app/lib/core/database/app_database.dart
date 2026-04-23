@@ -38,7 +38,7 @@ class AppDatabase {
 
     return openDatabase(
       dbPath,
-      version: 3,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -186,6 +186,31 @@ class AppDatabase {
       )
     ''');
 
+    batch.execute('''
+      CREATE TABLE IF NOT EXISTS route_patterns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        gtfs_file_id INTEGER NOT NULL,
+        route_db_id INTEGER NOT NULL,
+        name TEXT,
+        direction_id INTEGER NOT NULL DEFAULT 0,
+        shape_id TEXT,
+        FOREIGN KEY (gtfs_file_id) REFERENCES gtfs_files(id) ON DELETE CASCADE,
+        FOREIGN KEY (route_db_id) REFERENCES gtfs_routes(id) ON DELETE CASCADE
+      )
+    ''');
+
+    batch.execute('''
+      CREATE TABLE IF NOT EXISTS route_pattern_stops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pattern_id INTEGER NOT NULL,
+        stop_db_id INTEGER NOT NULL,
+        stop_sequence INTEGER NOT NULL,
+        time_from_origin_seconds INTEGER,
+        FOREIGN KEY (pattern_id) REFERENCES route_patterns(id) ON DELETE CASCADE,
+        FOREIGN KEY (stop_db_id) REFERENCES gtfs_stops(id) ON DELETE CASCADE
+      )
+    ''');
+
     // Indexes for performance
     batch.execute('CREATE INDEX IF NOT EXISTS idx_stops_gtfs ON gtfs_stops(gtfs_file_id)');
     batch.execute('CREATE INDEX IF NOT EXISTS idx_routes_gtfs ON gtfs_routes(gtfs_file_id)');
@@ -210,6 +235,31 @@ class AppDatabase {
       await db.execute(
         'ALTER TABLE gtfs_stops ADD COLUMN merged_from_stop_ids TEXT',
       );
+    }
+    if (oldVersion < 4) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS route_patterns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          gtfs_file_id INTEGER NOT NULL,
+          route_db_id INTEGER NOT NULL,
+          name TEXT,
+          direction_id INTEGER NOT NULL DEFAULT 0,
+          shape_id TEXT,
+          FOREIGN KEY (gtfs_file_id) REFERENCES gtfs_files(id) ON DELETE CASCADE,
+          FOREIGN KEY (route_db_id) REFERENCES gtfs_routes(id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS route_pattern_stops (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          pattern_id INTEGER NOT NULL,
+          stop_db_id INTEGER NOT NULL,
+          stop_sequence INTEGER NOT NULL,
+          time_from_origin_seconds INTEGER,
+          FOREIGN KEY (pattern_id) REFERENCES route_patterns(id) ON DELETE CASCADE,
+          FOREIGN KEY (stop_db_id) REFERENCES gtfs_stops(id) ON DELETE CASCADE
+        )
+      ''');
     }
   }
 

@@ -483,6 +483,83 @@ class CalendarDateModel {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Route patterns (trayectos)
+// ---------------------------------------------------------------------------
+
+class RoutePatternModel {
+  final int id;
+  final int gtfsFileId;
+  final int routeDbId;
+  final String? name;
+  final int directionId;
+  final String? shapeId;
+
+  // Loaded
+  List<RoutePatternStopModel> stops;
+
+  RoutePatternModel({
+    required this.id,
+    required this.gtfsFileId,
+    required this.routeDbId,
+    this.name,
+    required this.directionId,
+    this.shapeId,
+    this.stops = const [],
+  });
+
+  String get displayName => name?.isNotEmpty == true ? name! : 'Trayecto $id';
+
+  factory RoutePatternModel.fromMap(Map<String, dynamic> map) {
+    return RoutePatternModel(
+      id: map['id'] as int,
+      gtfsFileId: map['gtfs_file_id'] as int,
+      routeDbId: map['route_db_id'] as int,
+      name: map['name'] as String?,
+      directionId: map['direction_id'] as int? ?? 0,
+      shapeId: map['shape_id'] as String?,
+    );
+  }
+}
+
+class RoutePatternStopModel {
+  final int id;
+  final int patternId;
+  final int stopDbId;
+  final int stopSequence;
+  final int? timeFromOriginSeconds;
+
+  // Loaded
+  StopModel? stop;
+
+  RoutePatternStopModel({
+    required this.id,
+    required this.patternId,
+    required this.stopDbId,
+    required this.stopSequence,
+    this.timeFromOriginSeconds,
+    this.stop,
+  });
+
+  /// Format time as "mm:ss"
+  String get formattedTime {
+    if (timeFromOriginSeconds == null) return '--:--';
+    final m = timeFromOriginSeconds! ~/ 60;
+    final s = timeFromOriginSeconds! % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  factory RoutePatternStopModel.fromMap(Map<String, dynamic> map) {
+    return RoutePatternStopModel(
+      id: map['id'] as int,
+      patternId: map['pattern_id'] as int,
+      stopDbId: map['stop_db_id'] as int,
+      stopSequence: map['stop_sequence'] as int,
+      timeFromOriginSeconds: map['time_from_origin_seconds'] as int?,
+    );
+  }
+}
+
 class ServiceInfo {
   final String serviceId;
   final int gtfsFileId;

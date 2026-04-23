@@ -9,12 +9,14 @@ import '../../core/theme/app_theme.dart';
 import '../../models/gtfs_models.dart';
 import '../../models/project_model.dart';
 import '../../providers/project_providers.dart';
+import '../../providers/route_editor_providers.dart';
 import '../../providers/simulation_providers.dart';
 import 'widgets/info_panels.dart';
 import 'widgets/layers_panel.dart';
 import 'widgets/map_widget.dart';
 import 'widgets/right_panel.dart';
 import 'widgets/simulation_bar.dart';
+import 'widgets/trayecto_editor_panel.dart';
 
 class MainScreen extends ConsumerStatefulWidget {
   final int projectId;
@@ -127,6 +129,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     final project = ref.watch(currentProjectProvider);
     final selectedStop = ref.watch(selectedStopProvider);
     final selectedTrip = ref.watch(selectedTripProvider);
+    final isEditingPattern = ref.watch(patternEditorProvider) != null;
 
     return Scaffold(
       backgroundColor: AppTheme.background,
@@ -162,6 +165,15 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                           children: [
                             // Map
                             const MapWidget(),
+
+                            // Trayecto editor panel (left overlay)
+                            if (isEditingPattern)
+                              const Positioned(
+                                top: 0,
+                                bottom: 0,
+                                left: 0,
+                                child: TrayectoEditorPanel(),
+                              ),
 
                             // Info panels overlay (bottom-left)
                             if (selectedStop != null || selectedTrip != null)

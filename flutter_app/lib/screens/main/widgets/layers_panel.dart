@@ -11,6 +11,8 @@ import '../../../providers/shape_editor_provider.dart';
 import '../../../providers/simulation_providers.dart';
 import '../../../core/database/gtfs_repository.dart';
 import 'create_gtfs_dialog.dart';
+import 'create_route_dialog.dart';
+import '../../../providers/route_editor_providers.dart';
 
 class LayersPanel extends ConsumerStatefulWidget {
   const LayersPanel({super.key});
@@ -317,6 +319,15 @@ class _GtfsFileLayerState extends ConsumerState<_GtfsFileLayer> {
                       .set(widget.gtfsFile.id, !showStops),
                 ),
                 const SizedBox(width: 4),
+                // Nueva ruta
+                _SmallIconButton(
+                  icon: Icons.add_road,
+                  active: false,
+                  tooltip: 'Nueva ruta',
+                  onTap: () => showCreateRouteDialog(context, ref, widget.gtfsFile),
+                  activeColor: AppTheme.primary,
+                ),
+                const SizedBox(width: 4),
                 // Delete
                 _SmallIconButton(
                   icon: Icons.delete_outline,
@@ -513,11 +524,19 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
   // null = not yet loaded, true/false = has/no shapes
   bool? _hasShapes;
   bool _generating = false;
+  List<RoutePatternModel> _patterns = [];
+  int _lastPatternCacheVersion = -1;
 
   @override
   void initState() {
     super.initState();
     _checkShapes();
+    _loadPatterns();
+  }
+
+  Future<void> _loadPatterns() async {
+    final patterns = await GtfsRepository.getRoutePatterns(widget.routeId);
+    if (mounted) setState(() => _patterns = patterns);
   }
 
   Future<void> _checkShapes() async {
@@ -719,6 +738,15 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           ]),
         ),
       ],
+      const PopupMenuDivider(),
+      PopupMenuItem<String>(
+        value: 'delete_route',
+        child: const Row(children: [
+          Icon(Icons.delete_outline, size: 14, color: Colors.redAccent),
+          SizedBox(width: 8),
+          Text('Eliminar ruta', style: TextStyle(fontSize: 12, color: Colors.redAccent)),
+        ]),
+      ),
     ];
 
     final result = await showMenu<String>(
@@ -743,7 +771,47 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       await _generateShapes(context);
     } else if (result == 'edit_shape') {
       await _startEditingShape();
+    } else if (result == 'delete_route') {
+      await _confirmDeleteRoute(context);
     }
+  }
+
+  Future<void> _confirmDeleteRoute(BuildContext context) async {
+    final routesAsync = ref.read(routesProvider(widget.gtfsFile.id));
+    final route = routesAsync.valueOrNull?.firstWhere(
+      (r) => r.id == widget.routeId,
+      orElse: () => throw Exception('Route not found'),
+    );
+    if (route == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1E2129),
+        title: const Text('Eliminar ruta', style: TextStyle(color: Colors.white, fontSize: 15)),
+        content: Text(
+          '¿Eliminar la ruta "${route.displayName}" y todos sus trayectos, expediciones y shapes?\n\nEsta acción no se puede deshacer.',
+          style: const TextStyle(color: Color(0xFF8B9299), fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await GtfsRepository.deleteRoute(route.id);
+    ref.invalidate(routesProvider(widget.gtfsFile.id));
+    ref.read(shapeCacheVersionProvider.notifier).state++;
+    ref.invalidate(activeTripsProvider);
   }
 
   Future<void> _changeRouteColor(BuildContext context) async {
@@ -814,7 +882,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       (r) => r.id == widget.routeId,
       orElse: () => throw Exception('Route not found'),
     );
-    
+
     if (route == null) {
       return const SizedBox.shrink(); // Route not found, don't render
     }
@@ -830,112 +898,164 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
 
     final routeColor = hexToColor(route.routeColor);
 
-    return GestureDetector(
-      onSecondaryTapUp: (details) =>
-          _showContextMenu(context, details.globalPosition),
-      child: Padding(
-        padding:
-            const EdgeInsets.only(left: 44, right: 12, top: 3, bottom: 3),
-        child: Row(
-          children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                color: routeColor,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: InkWell(
-                onTap: () => _centerMapOnRoute(),
-                borderRadius: BorderRadius.circular(4),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                      vertical: 2, horizontal: 4),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          route.displayName,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppTheme.onSurface,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      // Indicator when route has no shapes
-                      if (!hasShapes)
-                        Tooltip(
-                          message:
-                              'Sin shapes — click derecho para generar',
-                          child: Icon(
-                            Icons.warning_amber_rounded,
-                            size: 11,
-                            color: Colors.orange.withOpacity(0.7),
-                          ),
-                        ),
-                    ],
+    // Reload patterns when cache version changes
+    final patternCacheVersion = ref.watch(patternCacheVersionProvider);
+    if (patternCacheVersion != _lastPatternCacheVersion) {
+      _lastPatternCacheVersion = patternCacheVersion;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadPatterns());
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Route row
+        GestureDetector(
+          onSecondaryTapUp: (details) =>
+              _showContextMenu(context, details.globalPosition),
+          child: Padding(
+            padding:
+                const EdgeInsets.only(left: 44, right: 12, top: 3, bottom: 3),
+            child: Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: routeColor,
+                    shape: BoxShape.circle,
                   ),
                 ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: InkWell(
+                    onTap: () => _centerMapOnRoute(),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 2, horizontal: 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              route.displayName,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppTheme.onSurface,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          // Indicator when route has no shapes
+                          if (!hasShapes)
+                            Tooltip(
+                              message:
+                                  'Sin shapes — click derecho para generar',
+                              child: Icon(
+                                Icons.warning_amber_rounded,
+                                size: 11,
+                                color: Colors.orange.withOpacity(0.7),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                // Shape visibility (disabled if no shapes)
+                _SmallIconButton(
+                  icon: Icons.route_outlined,
+                  active: showShape,
+                  tooltip: !hasShapes
+                      ? 'Sin shapes (click derecho para generar)'
+                      : showShape
+                          ? 'Ocultar recorrido'
+                          : 'Mostrar recorrido',
+                  onTap: () async {
+                    if (!hasShapes) return;
+                    if (showShape) {
+                      ref
+                          .read(routeShapeVisibilityProvider.notifier)
+                          .remove(route.id);
+                    } else {
+                      ref
+                          .read(routeShapeVisibilityProvider.notifier)
+                          .set(route.id, true);
+                      await _centerMapOnRoute();
+                    }
+                  },
+                ),
+                const SizedBox(width: 2),
+                // Stops visibility
+                _SmallIconButton(
+                  icon: Icons.location_on_outlined,
+                  active: showStops,
+                  tooltip: showStops ? 'Ocultar paradas' : 'Mostrar paradas',
+                  onTap: () {
+                    ref
+                        .read(routeStopsVisibilityProvider.notifier)
+                        .set(route.id, !showStops);
+                  },
+                ),
+                const SizedBox(width: 2),
+                // Simulation visibility
+                _SmallIconButton(
+                  icon: Icons.directions_bus_outlined,
+                  active: showSim,
+                  tooltip: showSim
+                      ? 'Ocultar simulación'
+                      : 'Activar simulación',
+                  onTap: () {
+                    ref
+                        .read(routeSimulationVisibilityProvider.notifier)
+                        .set(route.id, !showSim);
+                    ref.invalidate(activeTripsProvider);
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        // Trayectos sub-list
+        ..._patterns.map((pattern) => _PatternRow(
+              key: ValueKey(pattern.id),
+              pattern: pattern,
+              route: route,
+              gtfsFile: widget.gtfsFile,
+              onDeleted: _loadPatterns,
+            )),
+
+        // "Nuevo trayecto" button
+        Padding(
+          padding: const EdgeInsets.only(left: 60, right: 12, bottom: 2),
+          child: InkWell(
+            onTap: () {
+              ref
+                  .read(patternEditorProvider.notifier)
+                  .start(route, widget.gtfsFile);
+            },
+            borderRadius: BorderRadius.circular(4),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+              child: Row(
+                children: [
+                  Icon(Icons.add, size: 11,
+                      color: AppTheme.onSurfaceVariant.withOpacity(0.5)),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Nuevo trayecto',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: AppTheme.onSurfaceVariant.withOpacity(0.5),
+                    ),
+                  ),
+                ],
               ),
             ),
-            // Shape visibility (disabled if no shapes)
-            _SmallIconButton(
-              icon: Icons.route_outlined,
-              active: showShape,
-              tooltip: !hasShapes
-                  ? 'Sin shapes (click derecho para generar)'
-                  : showShape
-                      ? 'Ocultar recorrido'
-                      : 'Mostrar recorrido',
-              onTap: () async {
-                if (!hasShapes) return;
-                if (showShape) {
-                  ref
-                      .read(routeShapeVisibilityProvider.notifier)
-                      .remove(route.id);
-                } else {
-                  ref
-                      .read(routeShapeVisibilityProvider.notifier)
-                      .set(route.id, true);
-                  await _centerMapOnRoute();
-                }
-              },
-            ),
-            const SizedBox(width: 2),
-            // Stops visibility
-            _SmallIconButton(
-              icon: Icons.location_on_outlined,
-              active: showStops,
-              tooltip:
-                  showStops ? 'Ocultar paradas' : 'Mostrar paradas',
-              onTap: () {
-                ref
-                    .read(routeStopsVisibilityProvider.notifier)
-                    .set(route.id, !showStops);
-              },
-            ),
-            const SizedBox(width: 2),
-            // Simulation visibility
-            _SmallIconButton(
-              icon: Icons.directions_bus_outlined,
-              active: showSim,
-              tooltip: showSim
-                  ? 'Ocultar simulación'
-                  : 'Activar simulación',
-              onTap: () {
-                ref
-                    .read(routeSimulationVisibilityProvider.notifier)
-                    .set(route.id, !showSim);
-                ref.invalidate(activeTripsProvider);
-              },
-            ),
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 
@@ -981,6 +1101,112 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       CameraFit.bounds(
         bounds: bounds,
         padding: const EdgeInsets.all(50),
+      ),
+    );
+  }
+}
+
+class _PatternRow extends ConsumerWidget {
+  final RoutePatternModel pattern;
+  final RouteModel route;
+  final GtfsFileModel gtfsFile;
+  final VoidCallback onDeleted;
+
+  const _PatternRow({
+    super.key,
+    required this.pattern,
+    required this.route,
+    required this.gtfsFile,
+    required this.onDeleted,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Padding(
+      padding:
+          const EdgeInsets.only(left: 60, right: 12, top: 1, bottom: 1),
+      child: Row(
+        children: [
+          const Icon(Icons.subdirectory_arrow_right,
+              size: 10, color: Color(0xFF4A5568)),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              pattern.displayName,
+              style: const TextStyle(
+                fontSize: 10,
+                color: AppTheme.onSurfaceVariant,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // Edit button
+          Tooltip(
+            message: 'Editar trayecto',
+            child: InkWell(
+              onTap: () async {
+                await ref
+                    .read(patternEditorProvider.notifier)
+                    .editPattern(pattern, gtfsFile, route);
+              },
+              borderRadius: BorderRadius.circular(4),
+              child: const Padding(
+                padding: EdgeInsets.all(3),
+                child: Icon(Icons.edit_outlined,
+                    size: 12, color: Color(0xFF6B9FD4)),
+              ),
+            ),
+          ),
+          const SizedBox(width: 2),
+          // Delete button
+          Tooltip(
+            message: 'Eliminar trayecto',
+            child: InkWell(
+              onTap: () async {
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    backgroundColor: const Color(0xFF1E2129),
+                    title: const Text('Eliminar trayecto',
+                        style: TextStyle(
+                            color: Colors.white, fontSize: 15)),
+                    content: Text(
+                      '¿Eliminar el trayecto "${pattern.displayName}"?\n\nEsta acción no se puede deshacer.',
+                      style: const TextStyle(
+                          color: Color(0xFF8B9299), fontSize: 13),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () =>
+                            Navigator.of(context).pop(false),
+                        child: const Text('Cancelar'),
+                      ),
+                      FilledButton(
+                        onPressed: () =>
+                            Navigator.of(context).pop(true),
+                        style: FilledButton.styleFrom(
+                            backgroundColor: Colors.red),
+                        child: const Text('Eliminar'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirmed != true) return;
+                await GtfsRepository.deleteRoutePattern(pattern.id);
+                ref.read(shapeCacheVersionProvider.notifier).state++;
+                ref.read(patternCacheVersionProvider.notifier).state++;
+                onDeleted();
+              },
+              borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: const EdgeInsets.all(3),
+                child: Icon(Icons.close,
+                    size: 12,
+                    color: Colors.redAccent.withOpacity(0.7)),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

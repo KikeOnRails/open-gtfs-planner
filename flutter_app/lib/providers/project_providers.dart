@@ -128,6 +128,9 @@ final shapeCacheVersionProvider = StateProvider<int>((_) => 0);
 /// Incremented whenever stops are added/deleted/merged so MapWidget clears its stops cache
 final stopsCacheVersionProvider = StateProvider<int>((_) => 0);
 
+/// Incremented whenever route patterns are saved/deleted so layers panel reloads trayecto lists
+final patternCacheVersionProvider = StateProvider<int>((_) => 0);
+
 /// Per-agency visibility: agencyDbId -> bool (visible; default true when absent)
 final agencyVisibilityProvider =
     StateNotifierProvider<MapNotifier<int, bool>, Map<int, bool>>(

@@ -316,8 +316,122 @@ class GtfsImporter {
       await batch.commit(noResult: true);
     });
 
+    _notify('Generando trayectos (route_patterns)...', 0.92);
+    await _generatePatternsFromTrips(db, gtfsFile.id, tripMap);
+
     _notify('Importación completada', 1.0);
     return gtfsFile;
+  }
+
+  /// After all trips and stop_times are inserted, detect distinct patterns
+  /// per route (grouped by shape_id + direction_id + trip_headsign) and
+  /// persist them as route_patterns + route_pattern_stops.
+  Future<void> _generatePatternsFromTrips(
+      Database db, int gtfsFileId, Map<String, int> tripMap) async {
+    // 1. Fetch all trip rows for this file
+    final tripRows = await db.query(
+      'gtfs_trips',
+      columns: ['id', 'route_db_id', 'trip_id', 'shape_id', 'direction_id', 'trip_headsign'],
+      where: 'gtfs_file_id = ?',
+      whereArgs: [gtfsFileId],
+    );
+    if (tripRows.isEmpty) return;
+
+    // 2. For each trip, fetch the ordered stop sequence (stop_db_id list)
+    //    We only need unique patterns, so we build a signature first.
+    // Key = "routeDbId|shapeId|directionId|headsign"
+    // Value = first trip id for that group
+    final Map<String, Map<String, dynamic>> groupRepresentatives = {};
+
+    // Fetch all stop_times for this file in one query (ordered)
+    final stRows = await db.rawQuery('''
+      SELECT st.trip_db_id, st.stop_db_id, st.departure_time
+      FROM gtfs_stop_times st
+      INNER JOIN gtfs_trips t ON t.id = st.trip_db_id
+      WHERE t.gtfs_file_id = ?
+      ORDER BY st.trip_db_id, st.stop_sequence ASC
+    ''', [gtfsFileId]);
+
+    // Group stop_times by trip
+    final Map<int, List<Map<String, dynamic>>> stopsByTrip = {};
+    for (final r in stRows) {
+      final tid = r['trip_db_id'] as int;
+      stopsByTrip.putIfAbsent(tid, () => []).add(r);
+    }
+
+    // 3. For each trip determine its group key; keep the representative with
+    //    the most stops (in case of ties, the first encountered wins).
+    for (final tripRow in tripRows) {
+      final tripDbId = tripRow['id'] as int;
+      final routeDbId = tripRow['route_db_id'] as int;
+      final shapeId = tripRow['shape_id'] as String? ?? '';
+      final directionId = tripRow['direction_id']?.toString() ?? '';
+      final headsign = tripRow['trip_headsign'] as String? ?? '';
+
+      final stops = stopsByTrip[tripDbId] ?? [];
+      // Use stop sequence as part of key to distinguish patterns with same
+      // metadata but different stop sequences (e.g. short-turns)
+      final stopSignature = stops.map((s) => s['stop_db_id'].toString()).join(',');
+      final key = '$routeDbId|$shapeId|$directionId|$headsign|$stopSignature';
+
+      if (!groupRepresentatives.containsKey(key)) {
+        groupRepresentatives[key] = {
+          'trip_db_id': tripDbId,
+          'route_db_id': routeDbId,
+          'shape_id': shapeId.isEmpty ? null : shapeId,
+          'direction_id': int.tryParse(directionId),
+          'headsign': headsign.isEmpty ? null : headsign,
+          'stops': stops,
+        };
+      }
+    }
+
+    // 4. Insert one route_pattern + route_pattern_stops per group
+    for (final group in groupRepresentatives.values) {
+      final routeDbId = group['route_db_id'] as int;
+      final shapeId = group['shape_id'] as String?;
+      final directionId = group['direction_id'] as int?;
+      final headsign = group['headsign'] as String?;
+      final stops = group['stops'] as List<Map<String, dynamic>>;
+
+      if (stops.isEmpty) continue;
+
+      // Insert route_pattern
+      final patternId = await db.insert('route_patterns', {
+        'gtfs_file_id': gtfsFileId,
+        'route_db_id': routeDbId,
+        'name': headsign,
+        'direction_id': directionId ?? 0,
+        'shape_id': shapeId,
+      });
+
+      // Compute time-from-origin for each stop
+      int? originSeconds;
+      int? _parseTime(String? t) {
+        if (t == null || t.isEmpty) return null;
+        final parts = t.split(':');
+        if (parts.length != 3) return null;
+        return (int.tryParse(parts[0]) ?? 0) * 3600 +
+            (int.tryParse(parts[1]) ?? 0) * 60 +
+            (int.tryParse(parts[2]) ?? 0);
+      }
+
+      // Insert route_pattern_stops
+      final batch = db.batch();
+      for (int i = 0; i < stops.length; i++) {
+        final dep = _parseTime(stops[i]['departure_time'] as String?);
+        originSeconds ??= dep;
+        final timeFromOrigin =
+            (dep != null && originSeconds != null) ? dep - originSeconds : null;
+        batch.insert('route_pattern_stops', {
+          'pattern_id': patternId,
+          'stop_db_id': stops[i]['stop_db_id'] as int,
+          'stop_sequence': i,
+          'time_from_origin_seconds': timeFromOrigin,
+        });
+      }
+      await batch.commit(noResult: true);
+    }
   }
 
   /// Import data in smaller chunks with UI yield between each

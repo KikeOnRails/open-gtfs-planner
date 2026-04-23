@@ -152,6 +152,13 @@ class GtfsRepository {
     );
   }
 
+  /// Deletes a route and all its dependent data (trips, stop_times, shapes,
+  /// route_patterns) via ON DELETE CASCADE.
+  static Future<void> deleteRoute(int routeId) async {
+    final db = await _db;
+    await db.delete('gtfs_routes', where: 'id = ?', whereArgs: [routeId]);
+  }
+
   // -------------------------------------------------------------------------
   // Stops
   // -------------------------------------------------------------------------
@@ -486,16 +493,28 @@ class GtfsRepository {
   // Get all shape_ids used by a specific route
   static Future<List<String>> getShapeIdsByRoute(int routeDbId) async {
     final db = await _db;
-    final rows = await db.rawQuery('''
+    // Shapes from imported trips
+    final tripRows = await db.rawQuery('''
       SELECT DISTINCT shape_id 
       FROM gtfs_trips 
       WHERE route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ''
     ''', [routeDbId]);
-    return rows
+    final ids = tripRows
         .map((row) => row['shape_id'] as String?)
         .where((id) => id != null && id.isNotEmpty)
         .cast<String>()
         .toList();
+    // Shapes from manually created trayectos (route_patterns)
+    final patternRows = await db.rawQuery('''
+      SELECT DISTINCT shape_id
+      FROM route_patterns
+      WHERE route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ''
+    ''', [routeDbId]);
+    for (final row in patternRows) {
+      final sid = row['shape_id'] as String?;
+      if (sid != null && sid.isNotEmpty && !ids.contains(sid)) ids.add(sid);
+    }
+    return ids;
   }
 
   // Get all shapes for a specific route
@@ -779,6 +798,19 @@ class GtfsRepository {
 
   /// Checks whether a route already has at least one shape point.
   static Future<bool> routeHasShapes(int routeDbId) async {
+    // Only relevant if the route has trips (imported data) OR manual patterns.
+    final db = await _db;
+    final tripCount = Sqflite.firstIntValue(await db.rawQuery(
+      'SELECT COUNT(*) FROM gtfs_trips WHERE route_db_id = ?',
+      [routeDbId],
+    )) ?? 0;
+    // Check manual trayecto shapes
+    final patternShapeCount = Sqflite.firstIntValue(await db.rawQuery(
+      "SELECT COUNT(*) FROM route_patterns WHERE route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ''",
+      [routeDbId],
+    )) ?? 0;
+    if (tripCount == 0 && patternShapeCount == 0) return true; // New manual route, no warning
+    if (patternShapeCount > 0) return true;
     final shapeIds = await getShapeIdsByRoute(routeDbId);
     return shapeIds.isNotEmpty;
   }
@@ -921,5 +953,129 @@ class GtfsRepository {
       }
       await batch.commit(noResult: true);
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Route Patterns (Trayectos)
+  // -------------------------------------------------------------------------
+
+  static Future<int> insertRoutePattern(
+      int gtfsFileId, int routeDbId, String? name,
+      {int directionId = 0}) async {
+    final db = await _db;
+    return db.insert('route_patterns', {
+      'gtfs_file_id': gtfsFileId,
+      'route_db_id': routeDbId,
+      'name': name,
+      'direction_id': directionId,
+    });
+  }
+
+  static Future<List<RoutePatternModel>> getRoutePatterns(int routeDbId) async {
+    final db = await _db;
+    final rows = await db.query(
+      'route_patterns',
+      where: 'route_db_id = ?',
+      whereArgs: [routeDbId],
+      orderBy: 'id ASC',
+    );
+    return rows.map(RoutePatternModel.fromMap).toList();
+  }
+
+  static Future<RoutePatternModel?> getRoutePatternById(int id) async {
+    final db = await _db;
+    final rows = await db.query('route_patterns', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return null;
+    return RoutePatternModel.fromMap(rows.first);
+  }
+
+  static Future<void> deleteRoutePattern(int id) async {
+    final db = await _db;
+    await db.delete('route_patterns', where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<void> updateRoutePatternName(int patternId, String name) async {
+    final db = await _db;
+    await db.update('route_patterns', {'name': name},
+        where: 'id = ?', whereArgs: [patternId]);
+  }
+
+  /// Load shape points for a given shapeId as (lat, lon) pairs.
+  static Future<List<(double, double)>> getShapePointsForId(
+      int gtfsFileId, String shapeId) async {
+    final db = await _db;
+    final rows = await db.query(
+      'gtfs_shapes',
+      where: 'gtfs_file_id = ? AND shape_id = ?',
+      whereArgs: [gtfsFileId, shapeId],
+      orderBy: 'shape_pt_sequence ASC',
+    );
+    return rows.map((r) => ((r['shape_pt_lat'] as num).toDouble(), (r['shape_pt_lon'] as num).toDouble())).toList();
+  }
+
+  /// Replace all stops for a pattern.
+  static Future<void> savePatternStops(
+      int patternId, List<Map<String, dynamic>> stops) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      await txn.delete('route_pattern_stops',
+          where: 'pattern_id = ?', whereArgs: [patternId]);
+      final batch = txn.batch();
+      for (int i = 0; i < stops.length; i++) {
+        batch.insert('route_pattern_stops', {
+          'pattern_id': patternId,
+          'stop_db_id': stops[i]['stop_db_id'] as int,
+          'stop_sequence': i,
+          'time_from_origin_seconds': stops[i]['time_from_origin_seconds'],
+        });
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  static Future<List<RoutePatternStopModel>> getPatternStops(int patternId) async {
+    final db = await _db;
+    final rows = await db.query(
+      'route_pattern_stops',
+      where: 'pattern_id = ?',
+      whereArgs: [patternId],
+      orderBy: 'stop_sequence ASC',
+    );
+    final models = rows.map(RoutePatternStopModel.fromMap).toList();
+    // Load stop models
+    for (final ps in models) {
+      final stopRows = await db.query('gtfs_stops', where: 'id = ?', whereArgs: [ps.stopDbId]);
+      if (stopRows.isNotEmpty) ps.stop = StopModel.fromMap(stopRows.first);
+    }
+    return models;
+  }
+
+  /// Save OSRM shape for a pattern. Inserts rows into gtfs_shapes and updates
+  /// the pattern's shape_id. Returns the generated shape_id.
+  static Future<String> savePatternShape(
+      int patternId, int gtfsFileId, List<(double, double)> points) async {
+    final shapeId = 'pattern_$patternId';
+    final db = await _db;
+    await db.transaction((txn) async {
+      // Delete old shape points
+      await txn.delete('gtfs_shapes',
+          where: 'gtfs_file_id = ? AND shape_id = ?',
+          whereArgs: [gtfsFileId, shapeId]);
+      final batch = txn.batch();
+      for (int i = 0; i < points.length; i++) {
+        batch.insert('gtfs_shapes', {
+          'gtfs_file_id': gtfsFileId,
+          'shape_id': shapeId,
+          'shape_pt_lat': points[i].$1,
+          'shape_pt_lon': points[i].$2,
+          'shape_pt_sequence': i,
+        });
+      }
+      await batch.commit(noResult: true);
+      // Update pattern shape_id
+      await txn.update('route_patterns', {'shape_id': shapeId},
+          where: 'id = ?', whereArgs: [patternId]);
+    });
+    return shapeId;
   }
 }
