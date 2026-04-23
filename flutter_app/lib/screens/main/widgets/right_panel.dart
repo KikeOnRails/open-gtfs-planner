@@ -6,6 +6,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../models/gtfs_models.dart';
 import '../../../providers/project_providers.dart';
 import '../../../providers/simulation_providers.dart';
+import 'corredores_panel.dart';
 
 class RightPanel extends ConsumerStatefulWidget {
   const RightPanel({super.key});
@@ -21,7 +22,7 @@ class _RightPanelState extends ConsumerState<RightPanel>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -55,6 +56,7 @@ class _RightPanelState extends ConsumerState<RightPanel>
               Tab(text: 'VIAJES', icon: Icon(Icons.directions_bus_outlined, size: 14)),
               Tab(text: 'PARADAS', icon: Icon(Icons.place_outlined, size: 14)),
               Tab(text: 'GTFS INFO', icon: Icon(Icons.info_outline, size: 14)),
+              Tab(text: 'CORREDORES', icon: Icon(Icons.route_outlined, size: 14)),
             ],
           ),
           const Divider(height: 1),
@@ -65,6 +67,7 @@ class _RightPanelState extends ConsumerState<RightPanel>
                 _TripsTab(),
                 _StopsTab(),
                 _GtfsInfoTab(),
+                CorredoresPanel(),
               ],
             ),
           ),

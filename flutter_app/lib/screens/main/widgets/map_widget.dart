@@ -41,6 +41,13 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   // Cache de paradas por ruta: routeId -> List<StopModel>
   final Map<int, List<StopModel>> _routeStopsCache = {};
 
+  // Cache de cadencias calculadas por corredor: key -> label (ej. "12 min")
+  final Map<String, String> _corridorHeadwayLabels = {};
+  // Cache numérico de cadencia en minutos: key -> minutos (null = sin datos)
+  final Map<String, double?> _corridorHeadwayMinutes = {};
+  // Corredores cuya análisis ya está en curso para no duplicar peticiones
+  final Set<String> _corridorAnalysisPending = {};
+
   @override
   void initState() {
     super.initState();
@@ -136,6 +143,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
             excludeShapeId: editState?.shapeId,
           ),
         ),
+
+        // Corridor overlay (detected corridors)
+        ..._buildCorridorLayers(ref),
 
         // Pattern editor: live shape preview
         if (patternState != null && patternState.shapePoints.isNotEmpty)
@@ -972,6 +982,222 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         _stopsCache[gtfsFileId] = stops;
       });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Corridor map helpers
+  // ---------------------------------------------------------------------------
+
+  /// Returns a color reflecting the headway: green (frequent) → red (infrequent).
+  Color _headwayColor(double? minutes) {
+    if (minutes == null) return const Color(0xFF607D8B); // grey – loading/unknown
+    if (minutes < 5) return const Color(0xFF00E676);    // bright green
+    if (minutes < 10) return const Color(0xFFB2FF59);   // lime
+    if (minutes < 20) return const Color(0xFFFFD740);   // amber
+    if (minutes < 40) return const Color(0xFFFF6D00);   // orange
+    return const Color(0xFFFF1744);                     // red – very infrequent
+  }
+
+  /// Unique cache key for a corridor.
+  String _corKey(CorredorDetectado cor) => cor.stopIds.join(',');
+
+  /// Fires an async headway analysis for [cor] if not already running/cached.
+  void _ensureCorridorHeadway(CorredorDetectado cor) {
+    final key = _corKey(cor);
+    if (_corridorHeadwayLabels.containsKey(key) ||
+        _corridorAnalysisPending.contains(key)) return;
+
+    _corridorAnalysisPending.add(key);
+
+    () async {
+      try {
+        final services = await ref.read(activeServicesProvider.future);
+        final fileIds = ref
+            .read(gtfsFilesProvider)
+            .valueOrNull
+            ?.map((f) => f.id)
+            .toList() ?? [];
+        final serviceIds = services.map((s) => s.serviceId).toList();
+
+        final analysis = await GtfsRepository.analyzeCorredore(
+          stopIds: cor.stopIds,
+          displayName: cor.displayName,
+          serviceIds: serviceIds,
+          gtfsFileIds: fileIds,
+        );
+
+        final h = analysis.globalAvgHeadwayMinutes;
+        final label = h == null
+            ? '—'
+            : h < 1
+                ? '<1 min'
+                : '${h.round()} min';
+
+        if (mounted) {
+          setState(() {
+            _corridorHeadwayLabels[key] = label;
+            _corridorHeadwayMinutes[key] = h;
+            _corridorAnalysisPending.remove(key);
+          });
+        }
+      } catch (_) {
+        _corridorAnalysisPending.remove(key);
+      }
+    }();
+  }
+
+  /// Extracts a slice of [shapePoints] between the closest points to
+  /// [first] and [last] stops. Returns null if the shape doesn't fit.
+  List<LatLng>? _sliceShapeForStops(
+    List<LatLng> shapePoints,
+    LatLng first,
+    LatLng last,
+  ) {
+    if (shapePoints.length < 2) return null;
+
+    // Find index of shape point closest to first stop.
+    int iStart = 0;
+    double bestStart = double.infinity;
+    for (int i = 0; i < shapePoints.length; i++) {
+      final d = _dist2(shapePoints[i], first);
+      if (d < bestStart) {
+        bestStart = d;
+        iStart = i;
+      }
+    }
+
+    // Find index of shape point closest to last stop, searching FORWARD
+    // from iStart to keep directionality.
+    int iEnd = iStart;
+    double bestEnd = double.infinity;
+    for (int i = iStart; i < shapePoints.length; i++) {
+      final d = _dist2(shapePoints[i], last);
+      if (d < bestEnd) {
+        bestEnd = d;
+        iEnd = i;
+      }
+    }
+
+    if (iEnd <= iStart) return null;
+    return shapePoints.sublist(iStart, iEnd + 1);
+  }
+
+  /// Squared lat/lon distance (no need for real geodesics at this scale).
+  double _dist2(LatLng a, LatLng b) {
+    final dlat = a.latitude - b.latitude;
+    final dlon = a.longitude - b.longitude;
+    return dlat * dlat + dlon * dlon;
+  }
+
+  /// Returns shape points for [cor] following the actual route geometry,
+  /// or falls back to straight stop-to-stop line.
+  List<LatLng> _corridorShapePoints(CorredorDetectado cor) {
+    final fallback =
+        cor.stops.map((s) => LatLng(s.stopLat, s.stopLon)).toList();
+    if (cor.routes.isEmpty || cor.stops.length < 2) return fallback;
+
+    final route = cor.routes.first;
+    final fileShapes = _shapesCache[route.gtfsFileId];
+    if (fileShapes == null || fileShapes.isEmpty) return fallback;
+
+    final firstPt = LatLng(cor.stops.first.stopLat, cor.stops.first.stopLon);
+    final lastPt = LatLng(cor.stops.last.stopLat, cor.stops.last.stopLon);
+
+    // Find shape IDs that belong to this route.
+    final candidateShapeIds = _shapeToRouteCache.entries
+        .where((e) => e.value.id == route.id)
+        .map((e) => e.key)
+        .toList();
+
+    List<LatLng>? best;
+    double bestLen = double.infinity;
+
+    for (final shapeId in candidateShapeIds) {
+      final pts = fileShapes[shapeId];
+      if (pts == null || pts.length < 2) continue;
+      final sliced = _sliceShapeForStops(pts, firstPt, lastPt);
+      if (sliced != null && sliced.length < bestLen) {
+        bestLen = sliced.length.toDouble();
+        best = sliced;
+      }
+    }
+
+    return best ?? fallback;
+  }
+
+  /// Builds the corridor overlay layers (polylines + headway labels).
+  List<Widget> _buildCorridorLayers(WidgetRef ref) {
+    final visible = ref.watch(corredorMapVisibleProvider);
+    if (!visible) return const [];
+
+    final corridors =
+        ref.watch(detectedCorridorsProvider).valueOrNull ?? [];
+    if (corridors.isEmpty) return const [];
+
+    final polylines = <Polyline>[];
+    final markers = <Marker>[];
+
+    for (var i = 0; i < corridors.length; i++) {
+      final cor = corridors[i];
+
+      // Kick off headway analysis if not yet available
+      _ensureCorridorHeadway(cor);
+
+      final color = _headwayColor(_corridorHeadwayMinutes[_corKey(cor)]);
+
+      final points = _corridorShapePoints(cor);
+      if (points.length < 2) continue;
+
+      // Main corridor polyline
+      polylines.add(Polyline(
+        points: points,
+        strokeWidth: 5,
+        color: color.withOpacity(0.75),
+        borderColor: Colors.black.withOpacity(0.35),
+        borderStrokeWidth: 1.5,
+      ));
+
+      // Headway label at the middle point of the shape
+      final midIdx = points.length ~/ 2;
+      final midPoint = points[midIdx];
+      final headway = _corridorHeadwayLabels[_corKey(cor)];
+      final label = headway ?? '…';
+
+      markers.add(Marker(
+        point: midPoint,
+        width: 80,
+        height: 26,
+        child: IgnorePointer(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.90),
+              borderRadius: BorderRadius.circular(6),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withOpacity(0.4),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2)),
+              ],
+            ),
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.black,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
+      ));
+    }
+
+    return [
+      PolylineLayer(polylines: polylines),
+      MarkerLayer(markers: markers),
+    ];
   }
 
   List<Polyline> _buildPolylines(

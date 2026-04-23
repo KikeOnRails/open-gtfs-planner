@@ -322,3 +322,87 @@ class GtfsImportService {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Corredores (DB-persisted, optional manual corridors kept for compat)
+// ---------------------------------------------------------------------------
+
+final corredoresProvider =
+    AsyncNotifierProvider<CorredoresNotifier, List<CorredorModel>>(
+        CorredoresNotifier.new);
+
+class CorredoresNotifier extends AsyncNotifier<List<CorredorModel>> {
+  @override
+  Future<List<CorredorModel>> build() async {
+    final project = ref.watch(currentProjectProvider);
+    if (project == null) return [];
+    return GtfsRepository.getCorredores(project.id);
+  }
+
+  Future<void> reload() async => ref.invalidateSelf();
+
+  Future<CorredorModel> createCorredor(String name, List<int> stopIds) async {
+    final project = ref.read(currentProjectProvider);
+    if (project == null) throw StateError('No project selected');
+    final c = await GtfsRepository.createCorredor(project.id, name, stopIds);
+    ref.invalidateSelf();
+    return c;
+  }
+
+  Future<void> updateCorredor(int id, String name, List<int> stopIds) async {
+    await GtfsRepository.updateCorredor(id, name, stopIds);
+    ref.invalidateSelf();
+  }
+
+  Future<void> deleteCorredor(int id) async {
+    await GtfsRepository.deleteCorredor(id);
+    ref.invalidateSelf();
+  }
+}
+
+/// Selected corridor id for analysis view.
+final selectedCorredorIdProvider = StateProvider<int?>((ref) => null);
+
+// ---------------------------------------------------------------------------
+// Auto-detected corridors
+// ---------------------------------------------------------------------------
+
+/// Holds the result of the automatic corridor detection.
+/// Starts empty; call [DetectedCorridorsNotifier.detect] to populate.
+final detectedCorridorsProvider = StateNotifierProvider<
+    DetectedCorridorsNotifier,
+    AsyncValue<List<CorredorDetectado>>>(
+  (_) => DetectedCorridorsNotifier(),
+);
+
+class DetectedCorridorsNotifier
+    extends StateNotifier<AsyncValue<List<CorredorDetectado>>> {
+  DetectedCorridorsNotifier() : super(const AsyncData([]));
+
+  Future<void> detect({
+    required List<String> serviceIds,
+    required List<int> gtfsFileIds,
+    int minRoutes = 2,
+  }) async {
+    state = const AsyncLoading();
+    try {
+      final corridors = await GtfsRepository.detectCorridors(
+        gtfsFileIds: gtfsFileIds,
+        serviceIds: serviceIds,
+        minRoutes: minRoutes,
+      );
+      state = AsyncData(corridors);
+    } catch (e, st) {
+      state = AsyncError(e, st);
+    }
+  }
+
+  void reset() => state = const AsyncData([]);
+}
+
+/// The currently selected auto-detected corridor (for the analysis view).
+final selectedDetectedCorredorProvider =
+    StateProvider<CorredorDetectado?>((ref) => null);
+
+/// Whether corridor polylines are shown on the map.
+final corredorMapVisibleProvider = StateProvider<bool>((ref) => false);

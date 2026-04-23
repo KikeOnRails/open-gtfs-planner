@@ -572,6 +572,182 @@ class ServiceInfo {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Corredores
+// ---------------------------------------------------------------------------
+
+/// A user-defined corridor: an ordered sequence of stops shared by
+/// several routes/lines along a common stretch (e.g. an avenue).
+class CorredorModel {
+  final int id;
+  final int projectId;
+  final String name;
+
+  /// Ordered list of stop DB ids that define the corridor.
+  final List<int> stopIds;
+
+  /// Loaded stop objects (filled by the repository).
+  List<StopModel> stops;
+
+  CorredorModel({
+    required this.id,
+    required this.projectId,
+    required this.name,
+    required this.stopIds,
+    this.stops = const [],
+  });
+
+  factory CorredorModel.fromMap(Map<String, dynamic> map) {
+    final raw = map['stop_ids'] as String? ?? '';
+    final ids = raw.isEmpty ? <int>[] : raw.split(',').map(int.parse).toList();
+    return CorredorModel(
+      id: map['id'] as int,
+      projectId: map['project_id'] as int,
+      name: map['name'] as String,
+      stopIds: ids,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+        'project_id': projectId,
+        'name': name,
+        'stop_ids': stopIds.join(','),
+      };
+}
+
+/// An **automatically detected** corridor: a maximal chain of consecutive
+/// stops that is traversed by ≥ [minRoutes] routes.
+///
+/// This is a transient object (never saved to the database). It is produced
+/// by [GtfsRepository.detectCorridors].
+class CorredorDetectado {
+  /// Ordered stop DB ids forming the corridor.
+  final List<int> stopIds;
+
+  /// Loaded stop objects in the same order as [stopIds].
+  final List<StopModel> stops;
+
+  /// DB ids of the routes that traverse the full corridor sequence.
+  final List<int> routeIds;
+
+  /// Loaded route models.
+  final List<RouteModel> routes;
+
+  /// Total number of expeditions (trips) across all corridor routes
+  /// for the detected service day. Used for sorting.
+  final int totalTrips;
+
+  const CorredorDetectado({
+    required this.stopIds,
+    required this.stops,
+    required this.routeIds,
+    required this.routes,
+    this.totalTrips = 0,
+  });
+
+  /// Human-readable label: "FirstStop → LastStop"
+  String get displayName {
+    if (stops.isEmpty) return '—';
+    if (stops.length == 1) return stops.first.displayName;
+    return '${stops.first.displayName} → ${stops.last.displayName}';
+  }
+
+  /// Number of intermediate stops (excluding origin and destination).
+  int get intermediateCount => (stopIds.length - 2).clamp(0, 9999);
+}
+
+/// Per-route statistics within a corridor for a given service day.
+class CorredorRouteStats {
+  final RouteModel route;
+
+  /// Total number of trips (expediciones) that traverse the corridor.
+  final int totalTrips;
+
+  /// Sorted departure times (HH:MM:SS) from the **first corridor stop**.
+  final List<String> departureTimes;
+
+  /// Average headway between consecutive departures (null if < 2 trips).
+  final double? avgHeadwayMinutes;
+
+  /// Min headway in minutes (null if < 2 trips).
+  final double? minHeadwayMinutes;
+
+  /// Max headway in minutes (null if < 2 trips).
+  final double? maxHeadwayMinutes;
+
+  const CorredorRouteStats({
+    required this.route,
+    required this.totalTrips,
+    required this.departureTimes,
+    this.avgHeadwayMinutes,
+    this.minHeadwayMinutes,
+    this.maxHeadwayMinutes,
+  });
+
+  String get avgHeadwayLabel {
+    if (avgHeadwayMinutes == null) return '-';
+    final m = avgHeadwayMinutes!;
+    if (m < 1) return '<1 min';
+    return '${m.round()} min';
+  }
+}
+
+/// Full analysis result for a corridor on a specific service day.
+class CorredorAnalysis {
+  final CorredorModel corredor;
+
+  /// Stats broken down by route.
+  final List<CorredorRouteStats> routeStats;
+
+  /// Grand total of trips across all routes.
+  int get totalTrips => routeStats.fold(0, (s, r) => s + r.totalTrips);
+
+  /// Combined sorted departure times from the first corridor stop.
+  List<String> get allDepartureTimes {
+    final all = routeStats.expand((r) => r.departureTimes).toList()..sort();
+    return all;
+  }
+
+  /// Global average headway across all routes (null if < 2 departures).
+  double? get globalAvgHeadwayMinutes {
+    final times = allDepartureTimes;
+    if (times.length < 2) return null;
+    return _computeAvgHeadway(times);
+  }
+
+  String get globalHeadwayLabel {
+    final h = globalAvgHeadwayMinutes;
+    if (h == null) return '-';
+    if (h < 1) return '<1 min';
+    return '${h.round()} min';
+  }
+
+  const CorredorAnalysis({
+    required this.corredor,
+    required this.routeStats,
+  });
+
+  static double _computeAvgHeadway(List<String> sortedTimes) {
+    int totalMinutes = 0;
+    int count = 0;
+    for (int i = 1; i < sortedTimes.length; i++) {
+      final gap = _timeToMinutes(sortedTimes[i]) - _timeToMinutes(sortedTimes[i - 1]);
+      if (gap >= 0) {
+        totalMinutes += gap;
+        count++;
+      }
+    }
+    if (count == 0) return 0;
+    return totalMinutes / count;
+  }
+
+  static int _timeToMinutes(String t) {
+    final parts = t.split(':');
+    if (parts.length < 2) return 0;
+    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+  }
+}
+
 /// Lightweight summary of a single trip (expedición) for display in the editor.
 class ExpedicionSummary {
   final int tripDbId;

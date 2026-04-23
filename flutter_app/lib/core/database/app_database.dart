@@ -38,7 +38,7 @@ class AppDatabase {
 
     return openDatabase(
       dbPath,
-      version: 4,
+      version: 5,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -211,6 +211,16 @@ class AppDatabase {
       )
     ''');
 
+    batch.execute('''
+      CREATE TABLE IF NOT EXISTS corridors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        stop_ids TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    ''');
+
     // Indexes for performance
     batch.execute('CREATE INDEX IF NOT EXISTS idx_stops_gtfs ON gtfs_stops(gtfs_file_id)');
     batch.execute('CREATE INDEX IF NOT EXISTS idx_routes_gtfs ON gtfs_routes(gtfs_file_id)');
@@ -258,6 +268,17 @@ class AppDatabase {
           time_from_origin_seconds INTEGER,
           FOREIGN KEY (pattern_id) REFERENCES route_patterns(id) ON DELETE CASCADE,
           FOREIGN KEY (stop_db_id) REFERENCES gtfs_stops(id) ON DELETE CASCADE
+        )
+      ''');
+    }
+    if (oldVersion < 5) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS corridors (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          stop_ids TEXT NOT NULL DEFAULT '',
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
       ''');
     }
