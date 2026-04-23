@@ -1221,8 +1221,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         child: GestureDetector(
           onTap: () {
             final isModifier =
-                HardwareKeyboard.instance.isControlPressed ||
-                HardwareKeyboard.instance.isAltPressed;
+                HardwareKeyboard.instance.isShiftPressed;
             if (isModifier) {
               // Don't allow selecting the same stop twice
               if (selectedStop?.id == stop.id) return;
@@ -1334,7 +1333,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 }
 
 // ---------------------------------------------------------------------------
-// Map help hint (Ctrl/Alt multi-select tip)
+// Map help hint (Shift multi-select tip)
 // ---------------------------------------------------------------------------
 
 class _MapHint extends StatelessWidget {
@@ -1359,16 +1358,7 @@ class _MapHint extends StatelessWidget {
               style: TextStyle(color: Colors.white38, fontSize: 10),
               children: [
                 TextSpan(
-                  text: 'Ctrl',
-                  style: TextStyle(
-                    color: Colors.white60,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                TextSpan(text: ' o '),
-                TextSpan(
-                  text: 'Alt',
+                  text: 'Shift',
                   style: TextStyle(
                     color: Colors.white60,
                     fontWeight: FontWeight.w700,
