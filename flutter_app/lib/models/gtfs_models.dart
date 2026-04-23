@@ -136,6 +136,9 @@ class StopModel {
   final double stopLon;
   final String? stopCode;
   final String? stopDesc;
+  final bool isMerged;
+  /// IDs of the original stops that were merged into this one (only set when isMerged == true).
+  final List<int> mergedFromStopIds;
 
   const StopModel({
     required this.id,
@@ -146,6 +149,8 @@ class StopModel {
     required this.stopLon,
     this.stopCode,
     this.stopDesc,
+    this.isMerged = false,
+    this.mergedFromStopIds = const [],
   });
 
   String get displayName => stopName?.isNotEmpty == true ? stopName! : stopId;
@@ -160,7 +165,14 @@ class StopModel {
       stopLon: (map['stop_lon'] as num).toDouble(),
       stopCode: map['stop_code'] as String?,
       stopDesc: map['stop_desc'] as String?,
+      isMerged: (map['is_merged'] as int? ?? 0) == 1,
+      mergedFromStopIds: _parseIds(map['merged_from_stop_ids'] as String?),
     );
+  }
+
+  static List<int> _parseIds(String? raw) {
+    if (raw == null || raw.isEmpty) return const [];
+    return raw.split(',').map(int.parse).toList();
   }
 }
 

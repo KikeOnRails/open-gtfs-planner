@@ -38,8 +38,9 @@ class AppDatabase {
 
     return openDatabase(
       dbPath,
-      version: 1,
+      version: 3,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -87,6 +88,8 @@ class AppDatabase {
         stop_lon REAL NOT NULL,
         stop_code TEXT,
         stop_desc TEXT,
+        is_merged INTEGER NOT NULL DEFAULT 0,
+        merged_from_stop_ids TEXT,
         FOREIGN KEY (gtfs_file_id) REFERENCES gtfs_files(id) ON DELETE CASCADE
       )
     ''');
@@ -195,6 +198,19 @@ class AppDatabase {
     batch.execute('CREATE INDEX IF NOT EXISTS idx_cal_dates_service ON gtfs_calendar_dates(gtfs_file_id, service_id)');
 
     await batch.commit(noResult: true);
+  }
+
+  static Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute(
+        'ALTER TABLE gtfs_stops ADD COLUMN is_merged INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (oldVersion < 3) {
+      await db.execute(
+        'ALTER TABLE gtfs_stops ADD COLUMN merged_from_stop_ids TEXT',
+      );
+    }
   }
 
   /// Reset / re-open (useful after migrations or tests)

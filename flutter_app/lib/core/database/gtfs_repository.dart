@@ -217,25 +217,28 @@ class GtfsRepository {
         'stop_lat': newLat,
         'stop_lon': newLon,
         'stop_code': newStopCode,
+        'is_merged': 1,
+        'merged_from_stop_ids': '$stopAId,$stopBId',
       });
 
-      // 2. Redirect all stop_times from A and B to the new stop
-      await txn.rawUpdate(
-        'UPDATE gtfs_stop_times SET stop_db_id = ? WHERE stop_db_id = ?',
-        [newId, stopAId],
-      );
-      await txn.rawUpdate(
-        'UPDATE gtfs_stop_times SET stop_db_id = ? WHERE stop_db_id = ?',
-        [newId, stopBId],
-      );
-
-      // 3. Delete originals if requested
       if (deleteOriginals) {
-        await txn.delete('gtfs_stops',
-            where: 'id = ?', whereArgs: [stopAId]);
-        await txn.delete('gtfs_stops',
-            where: 'id = ?', whereArgs: [stopBId]);
+        // 2a. Redirect all stop_times from A and B to the new stop (only when
+        //     originals are deleted, since they won't exist anymore).
+        await txn.rawUpdate(
+          'UPDATE gtfs_stop_times SET stop_db_id = ? WHERE stop_db_id = ?',
+          [newId, stopAId],
+        );
+        await txn.rawUpdate(
+          'UPDATE gtfs_stop_times SET stop_db_id = ? WHERE stop_db_id = ?',
+          [newId, stopBId],
+        );
+
+        // 3a. Delete originals.
+        await txn.delete('gtfs_stops', where: 'id = ?', whereArgs: [stopAId]);
+        await txn.delete('gtfs_stops', where: 'id = ?', whereArgs: [stopBId]);
       }
+      // When keeping originals, stop_times stay on A and B so they continue
+      // showing their expeditions. The merged stop is a geographic reference.
     });
 
     final rows = await db.query('gtfs_stops', where: 'id = ?', whereArgs: [newId]);
@@ -336,6 +339,24 @@ class GtfsRepository {
       int stopDbId, List<String> serviceIds) async {
     if (serviceIds.isEmpty) return [];
     final db = await _db;
+
+    // Expand merged stop to also cover its source stops.
+    final stopRows = await db.query(
+      'gtfs_stops',
+      columns: ['is_merged', 'merged_from_stop_ids'],
+      where: 'id = ?',
+      whereArgs: [stopDbId],
+    );
+    final List<int> effectiveStopIds = [stopDbId];
+    if (stopRows.isNotEmpty) {
+      final isMerged = (stopRows.first['is_merged'] as int? ?? 0) == 1;
+      final raw = stopRows.first['merged_from_stop_ids'] as String?;
+      if (isMerged && raw != null && raw.isNotEmpty) {
+        effectiveStopIds.addAll(raw.split(',').map(int.parse));
+      }
+    }
+
+    final stopPlaceholders = effectiveStopIds.map((_) => '?').join(',');
     final placeholders = serviceIds.map((_) => '?').join(',');
     final rows = await db.rawQuery('''
       SELECT DISTINCT r.id, r.gtfs_file_id, r.agency_db_id, r.route_id,
@@ -344,10 +365,10 @@ class GtfsRepository {
       FROM gtfs_routes r
       INNER JOIN gtfs_trips t ON t.route_db_id = r.id
       INNER JOIN gtfs_stop_times st ON st.trip_db_id = t.id
-      WHERE st.stop_db_id = ?
+      WHERE st.stop_db_id IN ($stopPlaceholders)
         AND t.service_id IN ($placeholders)
       ORDER BY r.route_short_name ASC
-    ''', [stopDbId, ...serviceIds]);
+    ''', [...effectiveStopIds, ...serviceIds]);
     return rows.map(RouteModel.fromMap).toList();
   }
 
@@ -360,6 +381,25 @@ class GtfsRepository {
     if (serviceIds.isEmpty) return [];
     final db = await _db;
 
+    // Resolve the effective list of stop IDs to query.
+    // If this is a merged stop, also include its source stops so they show
+    // their combined (virtual) timetable.
+    final stopRows = await db.query(
+      'gtfs_stops',
+      columns: ['is_merged', 'merged_from_stop_ids'],
+      where: 'id = ?',
+      whereArgs: [stopDbId],
+    );
+    final List<int> effectiveStopIds = [stopDbId];
+    if (stopRows.isNotEmpty) {
+      final isMerged = (stopRows.first['is_merged'] as int? ?? 0) == 1;
+      final raw = stopRows.first['merged_from_stop_ids'] as String?;
+      if (isMerged && raw != null && raw.isNotEmpty) {
+        effectiveStopIds.addAll(raw.split(',').map(int.parse));
+      }
+    }
+
+    final stopPlaceholders = effectiveStopIds.map((_) => '?').join(',');
     final placeholders = serviceIds.map((_) => '?').join(',');
 
     final rows = await db.rawQuery('''
@@ -369,10 +409,10 @@ class GtfsRepository {
       FROM gtfs_stop_times st
       INNER JOIN gtfs_trips t ON st.trip_db_id = t.id
       INNER JOIN gtfs_routes r ON t.route_db_id = r.id
-      WHERE st.stop_db_id = ?
+      WHERE st.stop_db_id IN ($stopPlaceholders)
         AND t.service_id IN ($placeholders)
       ORDER BY st.arrival_time ASC
-    ''', [stopDbId, ...serviceIds]);
+    ''', [...effectiveStopIds, ...serviceIds]);
 
     return rows.map((row) {
       final st = StopTimeModel.fromMap(row);

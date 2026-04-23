@@ -1123,16 +1123,21 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final isSelected = selectedStop?.id == stop.id;
     final isSecondSelected = secondSelectedStop?.id == stop.id;
     final highlight = isSelected || isSecondSelected;
+    final isMerged = stop.isMerged;
     final markerColor = isSecondSelected
         ? Colors.cyan
         : isSelected
             ? Colors.orange
-            : Colors.white;
+            : isMerged
+                ? const Color(0xFFAB47BC) // purple for merged stops
+                : Colors.white;
     final borderColor = isSecondSelected
         ? Colors.cyan.shade700
         : isSelected
             ? Colors.orange.shade800
-            : AppTheme.primary;
+            : isMerged
+                ? Colors.purple.shade700
+                : AppTheme.primary;
     markers.add(
       Marker(
         point: LatLng(stop.stopLat, stop.stopLon),
@@ -1168,7 +1173,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
                           ? Colors.cyan
                           : isSelected
                               ? Colors.orange
-                              : AppTheme.primary)
+                              : isMerged
+                                  ? Colors.purple
+                                  : AppTheme.primary)
                       .withOpacity(0.4),
                   blurRadius: 4,
                 ),
