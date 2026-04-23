@@ -316,6 +316,16 @@ class StopTimeModel {
         .add(Duration(hours: hours, minutes: minutes, seconds: seconds));
   }
 
+  DateTime getDepartureTimeInDate(DateTime d) {
+    final parts = departureTime.split(':').map(int.parse).toList();
+    final hours = parts[0];
+    final minutes = parts.length > 1 ? parts[1] : 0;
+    final seconds = parts.length > 2 ? parts[2] : 0;
+    // Handle times past midnight (e.g., 25:00:00)
+    return DateTime(d.year, d.month, d.day)
+        .add(Duration(hours: hours, minutes: minutes, seconds: seconds));
+  }
+
   String get arrivalHourMin {
     final parts = arrivalTime.split(':');
     final h = int.parse(parts[0]) % 24;

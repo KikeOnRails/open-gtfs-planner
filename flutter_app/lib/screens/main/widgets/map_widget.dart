@@ -655,8 +655,12 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final nextStop = next.stop;
     if (prevStop == null || nextStop == null) return null;
 
+    // Use departure_time for the previous stop so the vehicle stays at the
+    // stop during its dwell time and only starts moving when it departs.
+    // This avoids the slow-start / fast-end visual artefact caused by
+    // counting dwell time as travel time.
     final timePrev =
-        prev.getArrivalTimeInDate(simDateTime).millisecondsSinceEpoch;
+        prev.getDepartureTimeInDate(simDateTime).millisecondsSinceEpoch;
     final timeNext =
         next.getArrivalTimeInDate(simDateTime).millisecondsSinceEpoch;
     final timeCurrent = simDateTime.millisecondsSinceEpoch;
@@ -717,15 +721,25 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     return LatLng(result.$1, result.$2);
   }
 
-  /// Precompute shape indices for trips that have shapes but no indices yet
   /// Precompute monotonic arc-length positions for all stops in each trip.
   /// Runs once per trip+shape combination and stores the result in
-  /// [TripModel.shapeArcLengthsForStops].  Using arc lengths (not vertex
-  /// indices) avoids the ambiguity that affects circular routes, where two
-  /// vertices can share the same physical location.
+  /// [TripModel.shapeArcLengthsForStops].
+  ///
+  /// Strategy: two-pass vertex search with no upper window limit.
+  ///
+  ///   Pass 1 – scan the entire remaining shape (from searchFrom to end) and
+  ///            find the global minimum haversine distance to the stop.
+  ///   Pass 2 – return the arc-length of the FIRST vertex whose distance is
+  ///            ≤ [_kEarliestFactor] × that minimum.
+  ///
+  /// "No upper limit" ensures distant terminus stops (e.g. C5: only 2 stops,
+  /// shape 30 km) are never missed.
+  /// "First sufficiently-close vertex" ensures circular routes (e.g. C1) snap
+  /// to the correct earlier pass instead of a geometrically closer return leg.
+  static const double _kEarliestFactor = 3.0;
+
   void _precomputeShapeIndices(List<TripModel> trips) {
     for (final trip in trips) {
-      // Skip if already computed or no shape available
       if (trip.shapeArcLengthsForStops != null) continue;
       if (trip.shapeId == null || trip.shapeId!.isEmpty) continue;
       if (trip.stopTimes == null || trip.stopTimes!.isEmpty) continue;
@@ -733,41 +747,50 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       final shapePath = _shapesCache[trip.gtfsFileId]?[trip.shapeId!];
       if (shapePath == null || shapePath.isEmpty) continue;
 
-      // Get or build cumulative distances
       _shapeCumDistCache.putIfAbsent(trip.gtfsFileId, () => {});
       final cumDist = _shapeCumDistCache[trip.gtfsFileId]!.putIfAbsent(
         trip.shapeId!,
         () => InterpolationHelper.buildCumulativeDistances(shapePath),
       );
 
-      // Project each stop onto the polyline with a monotonically increasing
-      // constraint — this correctly handles circular routes.
-      // We also apply a forward search window (maxLookAheadMeters) to avoid
-      // snapping to a geometrically closer but wrong pass on circular/overlapping
-      // routes (e.g. the return leg of a circular route being closer than the
-      // outbound leg for stops in the middle of the route).
-      final totalLength = cumDist.last;
-      // Allow searching up to 20 % of the total shape length ahead, but at
-      // least 500 m and at most 5 km, so we never miss a legitimate jump.
-      final window = (totalLength * 0.20).clamp(500.0, 5000.0);
-
       final arcLengths = <double>[];
-      double searchFrom = 0.0;
+      int searchFromIdx = 0;
+
       for (final st in trip.stopTimes!) {
         final stop = st.stop;
         if (stop == null) {
-          arcLengths.add(searchFrom);
+          arcLengths.add(cumDist[searchFromIdx]);
           continue;
         }
-        final searchTo = (searchFrom + window).clamp(0.0, totalLength);
-        final arc = InterpolationHelper.projectOntoPolylineInWindow(
-          shapePath, cumDist,
-          stop.stopLat, stop.stopLon,
-          searchFromArcLen: searchFrom,
-          searchToArcLen: searchTo,
-        );
-        arcLengths.add(arc);
-        searchFrom = arc; // next stop must be at or after this arc position
+
+        // Pass 1: find global minimum distance from searchFromIdx to end
+        double minDist = double.infinity;
+        for (int i = searchFromIdx; i < shapePath.length; i++) {
+          final d = InterpolationHelper.haversineMeters(
+            stop.stopLat, stop.stopLon,
+            shapePath[i].latitude, shapePath[i].longitude,
+          );
+          if (d < minDist) minDist = d;
+        }
+
+        // Pass 2: take the FIRST vertex within kEarliestFactor × minDist.
+        // This prefers an earlier match over a marginally closer later one,
+        // which prevents circular routes from snapping to the return leg.
+        final threshold = minDist * _kEarliestFactor;
+        int bestIdx = searchFromIdx;
+        for (int i = searchFromIdx; i < shapePath.length; i++) {
+          final d = InterpolationHelper.haversineMeters(
+            stop.stopLat, stop.stopLon,
+            shapePath[i].latitude, shapePath[i].longitude,
+          );
+          if (d <= threshold) {
+            bestIdx = i;
+            break;
+          }
+        }
+
+        arcLengths.add(cumDist[bestIdx]);
+        searchFromIdx = bestIdx; // monotonically forward for next stop
       }
 
       trip.shapeArcLengthsForStops = arcLengths;
