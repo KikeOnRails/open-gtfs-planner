@@ -87,6 +87,10 @@ class SyncResult {
   /// Events in the window after optimisation (sorted by minuteInWindow).
   final List<SyncEvent> optimizedEvents;
 
+  /// The minute-of-day (0–1439) that corresponds to position 0 of the window.
+  /// Used to convert window offsets into real HH:mm clock labels.
+  final int windowAnchorMinute;
+
   const SyncResult({
     required this.windowMinutes,
     required this.originalMinGapMinutes,
@@ -98,6 +102,7 @@ class SyncResult {
     required this.suggestions,
     required this.originalEvents,
     required this.optimizedEvents,
+    required this.windowAnchorMinute,
   });
 
   double get improvementMinutes =>
@@ -160,7 +165,8 @@ class TransferSyncAlgorithm {
 
   static LineScheduleData buildLineSchedule(
       RouteModel route, List<StopTimeModel> stopTimes, DateTime refDate) {
-    final arrivals = stopTimes
+    // First pass: compute all arrivals to detect the headway reliably.
+    final allArrivals = stopTimes
         .map((st) {
           final dt = st.getArrivalTimeInDate(refDate);
           return dt.hour * 60 + dt.minute;
@@ -168,10 +174,22 @@ class TransferSyncAlgorithm {
         .toList()
       ..sort();
 
-    final headway = detectHeadway(arrivals);
+    final headway = detectHeadway(allArrivals);
+
+    // Second pass: restrict to a window of ±6 headway cycles around
+    // simDateTime.  This prevents incommensurate-headway lines from always
+    // showing a near-zero min-gap somewhere in the full day, which would
+    // make the optimiser think no improvement is possible.
+    final refMinutes = refDate.hour * 60 + refDate.minute;
+    final halfWindow = 6 * headway;
+    final lo = refMinutes - halfWindow;
+    final hi = refMinutes + halfWindow;
+
+    final arrivals = allArrivals.where((m) => m >= lo && m <= hi).toList();
+
     return LineScheduleData(
       route: route,
-      arrivalMinutes: arrivals,
+      arrivalMinutes: arrivals.isNotEmpty ? arrivals : allArrivals,
       headway: headway,
     );
   }
@@ -200,36 +218,35 @@ class TransferSyncAlgorithm {
 
   // ---- Gap metrics ---------------------------------------------------------
 
-  /// Minimum gap between consecutive arrivals in a sorted list.
-  static double _computeMinGapLinear(List<int> sorted) {
-    if (sorted.length < 2) return double.infinity;
+  /// Minimum gap in a **circular** arrangement: sorted events in [0, window).
+  /// Includes the wrap-around gap from the last event back to the first.
+  static double _computeMinGapCircular(List<int> sorted, int window) {
+    if (sorted.length < 2) return window.toDouble();
     double minGap = double.infinity;
     for (int i = 1; i < sorted.length; i++) {
       final g = (sorted[i] - sorted[i - 1]).toDouble();
       if (g < minGap) minGap = g;
     }
+    // Wrap-around gap
+    final wrapGap = (window - sorted.last + sorted.first).toDouble();
+    if (wrapGap < minGap) minGap = wrapGap;
     return minGap;
   }
 
-  /// Maximum gap between consecutive arrivals in a sorted list.
-  static double _computeMaxGapLinear(List<int> sorted) {
+  /// Gap range in a circular arrangement.
+  static double _computeGapRangeCircular(List<int> sorted, int window) {
     if (sorted.length < 2) return 0;
+    double minGap = double.infinity;
     double maxGap = 0;
     for (int i = 1; i < sorted.length; i++) {
       final g = (sorted[i] - sorted[i - 1]).toDouble();
+      if (g < minGap) minGap = g;
       if (g > maxGap) maxGap = g;
     }
-    return maxGap;
-  }
-
-  /// Gap range (max - min). 0 = perfectly uniform cadence.
-  static double _computeGapRange(List<int> sorted) =>
-      _computeMaxGapLinear(sorted) - _computeMinGapLinear(sorted);
-
-  /// Average inter-arrival gap.
-  static double _computeAvgGap(List<int> sorted) {
-    if (sorted.length < 2) return 0;
-    return (sorted.last - sorted.first) / (sorted.length - 1);
+    final wrapGap = (window - sorted.last + sorted.first).toDouble();
+    if (wrapGap < minGap) minGap = wrapGap;
+    if (wrapGap > maxGap) maxGap = wrapGap;
+    return maxGap - minGap;
   }
 
   // ---- Main optimisation ---------------------------------------------------
@@ -237,23 +254,23 @@ class TransferSyncAlgorithm {
   /// Given a list of lines, finds the optimal phase offsets to maximise the
   /// minimum gap between consecutive arrivals at the stop.
   ///
-  /// Works directly on **real arrival times** (not a synthetic periodic model)
-  /// so that:
-  ///   - Irregular headways are handled correctly.
-  ///   - The minimum gap is meaningful in the actual timetable window.
-  ///   - Coprime headways (e.g. 13 and 15 min) don't produce spurious
-  ///     all-zero gaps due to periodic collisions in the LCM window.
+  /// Uses a **periodic (circular) model** within [0, window) for scoring so
+  /// that real-world schedule irregularities don't distort the result.
   ///
-  /// Strategy:
-  ///   1. Keep line 0 fixed (shift = 0 min).
-  ///   2. For each subsequent line k, try every integer shift in
-  ///      [0, headway_k) minutes and pick the value that maximises the minimum
-  ///      gap across ALL combined arrivals (lines 0..k).
-  ///   3. Normalise shifts to (−headway/2, headway/2] for display.
-  static SyncResult optimize(List<LineScheduleData> lines) {
+  /// [fixedIndices] — indices in [lines] whose shift must remain 0 (reference).
+  /// All indices not in [fixedIndices] are optimised freely.
+  /// If [fixedIndices] is empty, index 0 is treated as fixed by default.
+  static SyncResult optimize(
+    List<LineScheduleData> lines, {
+    Set<int> fixedIndices = const {},
+  }) {
     assert(lines.isNotEmpty);
 
-    // ------ Window for periodic visualisation only -----------------------
+    // Default: fix line 0 if caller didn't specify anything
+    final fixed =
+        fixedIndices.isEmpty ? <int>{0} : fixedIndices;
+
+    // ------ Window for periodic visualisation and scoring ----------------
     int window = lines.first.headway;
     for (final line in lines.skip(1)) {
       window = _lcm(window, line.headway);
@@ -265,21 +282,26 @@ class TransferSyncAlgorithm {
     final maxH = lines.map((l) => l.headway).reduce(math.max);
     if (window < maxH) window = maxH;
 
-    // ------ Original min gap on REAL arrivals ----------------------------
+    // ------ Original min gap on the periodic model -----------------------
     final allOriginal = <int>[];
     for (final line in lines) {
-      allOriginal.addAll(line.arrivalMinutes);
+      if (line.arrivalMinutes.isEmpty) continue;
+      allOriginal.addAll(_eventsInWindow(
+        firstArrival: line.arrivalMinutes.first,
+        headway: line.headway,
+        shift: 0,
+        window: window,
+      ));
     }
     allOriginal.sort();
-    final originalMinGap = _computeMinGapLinear(allOriginal);
+    final originalMinGap = _computeMinGapCircular(allOriginal, window);
 
-    // ------ Greedy optimisation on REAL arrivals -------------------------
-    // Scoring is lexicographic:
-    //   1st: maximise minimum inter-arrival gap  (no two buses too close)
-    //   2nd: minimise gap range (max-min)        (uniform cadence)
+    // ------ Greedy optimisation on the PERIODIC MODEL --------------------
+    // Fixed lines keep shift = 0; free lines are optimised around them.
     final shifts = List.filled(lines.length, 0);
 
-    for (int k = 1; k < lines.length; k++) {
+    for (int k = 0; k < lines.length; k++) {
+      if (fixed.contains(k)) continue; // keep shift = 0
       int bestShift = 0;
       double bestMinGap = -1;
       double bestRange = double.infinity;
@@ -289,17 +311,25 @@ class TransferSyncAlgorithm {
         final combined = <int>[];
         for (int j = 0; j < k; j++) {
           if (lines[j].arrivalMinutes.isEmpty) continue;
-          for (final t in lines[j].arrivalMinutes) {
-            combined.add(t + shifts[j]);
-          }
+          combined.addAll(_eventsInWindow(
+            firstArrival: lines[j].arrivalMinutes.first,
+            headway: lines[j].headway,
+            shift: shifts[j],
+            window: window,
+          ));
         }
-        for (final t in lines[k].arrivalMinutes) {
-          combined.add(t + delta);
+        if (lines[k].arrivalMinutes.isNotEmpty) {
+          combined.addAll(_eventsInWindow(
+            firstArrival: lines[k].arrivalMinutes.first,
+            headway: lines[k].headway,
+            shift: delta,
+            window: window,
+          ));
         }
         combined.sort();
 
-        final minGap = _computeMinGapLinear(combined);
-        final range = _computeGapRange(combined);
+        final minGap = _computeMinGapCircular(combined, window);
+        final range = _computeGapRangeCircular(combined, window);
 
         // Lexicographic: prefer larger min_gap; break ties with smaller range
         if (minGap > bestMinGap ||
@@ -320,20 +350,27 @@ class TransferSyncAlgorithm {
       return s;
     });
 
-    // ------ Optimised min gap on REAL arrivals ---------------------------
+    // ------ Optimised metrics on the periodic model ----------------------
     final allOptimised = <int>[];
     for (int j = 0; j < lines.length; j++) {
-      for (final t in lines[j].arrivalMinutes) {
-        allOptimised.add(t + shifts[j]);
-      }
+      if (lines[j].arrivalMinutes.isEmpty) continue;
+      allOptimised.addAll(_eventsInWindow(
+        firstArrival: lines[j].arrivalMinutes.first,
+        headway: lines[j].headway,
+        shift: shifts[j],
+        window: window,
+      ));
     }
     allOptimised.sort();
-    final optimisedMinGap = _computeMinGapLinear(allOptimised);
-    final optimisedGapRange = _computeGapRange(allOptimised);
-    final optimisedAvgGap = _computeAvgGap(allOptimised);
+    final optimisedMinGap = _computeMinGapCircular(allOptimised, window);
+    final optimisedGapRange = _computeGapRangeCircular(allOptimised, window);
+    // avg gap on the circular window: window / total events
+    final optimisedAvgGap =
+        allOptimised.isEmpty ? 0.0 : window / allOptimised.length;
 
-    final origGapRange = _computeGapRange(allOriginal);
-    final origAvgGap = _computeAvgGap(allOriginal);
+    final origGapRange = _computeGapRangeCircular(allOriginal, window);
+    final origAvgGap =
+        allOriginal.isEmpty ? 0.0 : window / allOriginal.length;
 
     // ------ Periodic viz events (for the visualisation section only) -----
     final List<SyncEvent> originalEventsViz = [];
@@ -376,6 +413,14 @@ class TransferSyncAlgorithm {
       );
     });
 
+    // The anchor minute: the real minute-of-day at position 0 of the window.
+    // anchor = firstArrival % headway for the reference (first) line.
+    final anchorMinute = lines.first.arrivalMinutes.isNotEmpty
+        ? ((lines.first.arrivalMinutes.first % lines.first.headway) +
+                24 * 60) %
+            (24 * 60)
+        : 0;
+
     return SyncResult(
       windowMinutes: window,
       originalMinGapMinutes: originalMinGap,
@@ -387,6 +432,7 @@ class TransferSyncAlgorithm {
       suggestions: suggestions,
       originalEvents: originalEventsViz,
       optimizedEvents: optimisedEventsViz,
+      windowAnchorMinute: anchorMinute,
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,6 +12,7 @@ import '../../../models/gtfs_models.dart';
 import '../../../providers/project_providers.dart';
 import '../../../providers/shape_editor_provider.dart';
 import '../../../providers/simulation_providers.dart';
+import 'merge_stops_dialog.dart';
 import 'shape_editor_layer.dart';
 
 class MapWidget extends ConsumerStatefulWidget {
@@ -51,6 +53,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final shapeVis = ref.watch(routeShapeVisibilityProvider);
     final stopsVis = ref.watch(gtfsStopsVisibilityProvider);
     final selectedStop = ref.watch(selectedStopProvider);
+    final secondSelectedStop = ref.watch(secondSelectedStopProvider);
     final agencyVis = ref.watch(agencyVisibilityProvider);
 
     // Solo observar el dateTime para vehículos
@@ -123,7 +126,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         // Stop markers
         MarkerLayer(
           markers: _buildStopMarkers(gtfsFiles, stopsVis, selectedStop,
-              ref.watch(routeStopsVisibilityProvider), agencyVis),
+              ref.watch(routeStopsVisibilityProvider), agencyVis,
+              secondSelectedStop: secondSelectedStop),
         ),
 
         // Vehicle simulation markers
@@ -157,18 +161,136 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       ],
     );
 
-    if (editState == null) return map;
+    final twoStopsSelected =
+        selectedStop != null && secondSelectedStop != null;
 
-    // Wrap map in a Stack to show the edit toolbar
+    // Always wrap in Stack for overlay toolbars and hints
     return Stack(children: [
       map,
-      Positioned(
-        top: 12,
-        left: 0,
-        right: 0,
-        child: Center(child: _buildEditToolbar(context, editState)),
-      ),
+
+      // Edit toolbar (shape editor)
+      if (editState != null)
+        Positioned(
+          top: 12,
+          left: 0,
+          right: 0,
+          child: Center(child: _buildEditToolbar(context, editState)),
+        ),
+
+      // Two-stop action toolbar
+      if (twoStopsSelected && editState == null)
+        Positioned(
+          top: 12,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: _buildTwoStopToolbar(
+                context, selectedStop, secondSelectedStop),
+          ),
+        ),
+
+      // Help hint (bottom-right)
+      if (editState == null)
+        const Positioned(
+          bottom: 12,
+          right: 12,
+          child: _MapHint(),
+        ),
     ]);
+  }
+
+  Widget _buildTwoStopToolbar(
+      BuildContext context, StopModel stopA, StopModel stopB) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xF01E2129),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.teal.withOpacity(0.6), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.5),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.place, color: Colors.orange, size: 14),
+          const SizedBox(width: 4),
+          Text(
+            stopA.displayName,
+            style: const TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 8),
+          const Icon(Icons.add, color: Colors.white38, size: 14),
+          const SizedBox(width: 8),
+          const Icon(Icons.place, color: Colors.cyan, size: 14),
+          const SizedBox(width: 4),
+          Text(
+            stopB.displayName,
+            style: const TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 12),
+          Container(width: 1, height: 20, color: Colors.white12),
+          const SizedBox(width: 12),
+          // Merge button
+          _ToolbarBtn(
+            icon: Icons.merge_type,
+            label: 'Unificar parada',
+            enabled: true,
+            color: Colors.teal,
+            onTap: () async {
+              final merged = await showMergeStopsDialog(
+                  context, ref, stopA, stopB);
+              if (!mounted) return;
+              if (merged != null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    behavior: SnackBarBehavior.floating,
+                    margin: const EdgeInsets.all(16),
+                    backgroundColor: const Color(0xFF0D5C47),
+                    content: Row(children: [
+                      const Icon(Icons.check_circle,
+                          color: Colors.white, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Paradas unificadas como "${merged.displayName}"',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ]),
+                  ),
+                );
+                // Invalidate stop caches so new stop appears on map
+                for (final key in _stopsCache.keys.toList()) {
+                  _stopsCache.remove(key);
+                }
+                for (final key in _routeStopsCache.keys.toList()) {
+                  _routeStopsCache.remove(key);
+                }
+                if (mounted) setState(() {});
+              }
+            },
+          ),
+          const SizedBox(width: 8),
+          // Deselect button
+          _ToolbarBtn(
+            icon: Icons.close,
+            label: 'Deseleccionar',
+            enabled: true,
+            color: Colors.white54,
+            onTap: () {
+              ref.read(selectedStopProvider.notifier).state = null;
+              ref.read(secondSelectedStopProvider.notifier).state = null;
+            },
+          ),
+        ]),
+      ),
+    );
   }
 
   Widget _buildEditToolbar(BuildContext context, ShapeEditState editState) {
@@ -876,8 +998,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     Map<int, bool> stopsVis,
     StopModel? selectedStop,
     Map<int, bool> routeStopsVis,
-    Map<int, bool> agencyVis,
-  ) {
+    Map<int, bool> agencyVis, {
+    StopModel? secondSelectedStop,
+  }) {
     final markers = <Marker>[];
 
     // Build a flat route lookup map from cache
@@ -906,7 +1029,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     
     if (visibleRoutes.isNotEmpty) {
       // Mostrar paradas de rutas específicas
-      _buildStopMarkersForRoutes(visibleRoutes, selectedStop, markers);
+      _buildStopMarkersForRoutes(visibleRoutes, selectedStop, markers,
+          secondSelectedStop: secondSelectedStop);
     } else {
       // Mostrar paradas por archivo (comportamiento original)
       for (final file in files) {
@@ -919,7 +1043,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         final stops = _stopsCache[file.id] ?? [];
 
         for (final stop in stops) {
-          _addStopMarker(stop, selectedStop, markers);
+          _addStopMarker(stop, selectedStop, markers,
+              secondSelectedStop: secondSelectedStop);
         }
       }
     }
@@ -930,8 +1055,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   void _buildStopMarkersForRoutes(
     List<int> routeIds,
     StopModel? selectedStop,
-    List<Marker> markers,
-  ) {
+    List<Marker> markers, {
+    StopModel? secondSelectedStop,
+  }) {
     final uniqueStops = <int, StopModel>{};
     
     // Cargar paradas de las rutas visibles
@@ -951,7 +1077,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     
     // Añadir marcadores para las paradas únicas
     for (final stop in uniqueStops.values) {
-      _addStopMarker(stop, selectedStop, markers);
+      _addStopMarker(stop, selectedStop, markers,
+          secondSelectedStop: secondSelectedStop);
     }
   }
 
@@ -967,31 +1094,58 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
   void _addStopMarker(
     StopModel stop,
     StopModel? selectedStop,
-    List<Marker> markers,
-  ) {
+    List<Marker> markers, {
+    StopModel? secondSelectedStop,
+  }) {
     final isSelected = selectedStop?.id == stop.id;
+    final isSecondSelected = secondSelectedStop?.id == stop.id;
+    final highlight = isSelected || isSecondSelected;
+    final markerColor = isSecondSelected
+        ? Colors.cyan
+        : isSelected
+            ? Colors.orange
+            : Colors.white;
+    final borderColor = isSecondSelected
+        ? Colors.cyan.shade700
+        : isSelected
+            ? Colors.orange.shade800
+            : AppTheme.primary;
     markers.add(
       Marker(
         point: LatLng(stop.stopLat, stop.stopLon),
-        width: isSelected ? 24 : 16,
-        height: isSelected ? 24 : 16,
+        width: highlight ? 24 : 16,
+        height: highlight ? 24 : 16,
         child: GestureDetector(
           onTap: () {
-            ref.read(selectedStopProvider.notifier).state = stop;
-            ref.read(selectedTripProvider.notifier).state = null;
+            final isModifier =
+                HardwareKeyboard.instance.isControlPressed ||
+                HardwareKeyboard.instance.isAltPressed;
+            if (isModifier) {
+              // Don't allow selecting the same stop twice
+              if (selectedStop?.id == stop.id) return;
+              ref.read(secondSelectedStopProvider.notifier).state = stop;
+            } else {
+              ref.read(selectedStopProvider.notifier).state = stop;
+              ref.read(selectedTripProvider.notifier).state = null;
+              // Clear second selection when clicking without modifier
+              ref.read(secondSelectedStopProvider.notifier).state = null;
+            }
           },
           child: Container(
             decoration: BoxDecoration(
-              color: isSelected ? Colors.orange : Colors.white,
+              color: markerColor,
               shape: BoxShape.circle,
               border: Border.all(
-                color:
-                    isSelected ? Colors.orange.shade800 : AppTheme.primary,
-                width: isSelected ? 3 : 2,
+                color: borderColor,
+                width: highlight ? 3 : 2,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: (isSelected ? Colors.orange : AppTheme.primary)
+                  color: (isSecondSelected
+                          ? Colors.cyan
+                          : isSelected
+                              ? Colors.orange
+                              : AppTheme.primary)
                       .withOpacity(0.4),
                   blurRadius: 4,
                 ),
@@ -1028,6 +1182,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           pos.longitude, selectedStop.stopLat, selectedStop.stopLon);
       if (dist > threshold) {
         ref.read(selectedStopProvider.notifier).state = null;
+        ref.read(secondSelectedStopProvider.notifier).state = null;
         ref.read(selectedTripProvider.notifier).state = null;
       }
     }
@@ -1062,6 +1217,58 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         0,
       ]),
       child: tileWidget,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Map help hint (Ctrl/Alt multi-select tip)
+// ---------------------------------------------------------------------------
+
+class _MapHint extends StatelessWidget {
+  const _MapHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xCC1E2129),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.keyboard, color: Colors.white38, size: 13),
+          const SizedBox(width: 6),
+          RichText(
+            text: const TextSpan(
+              style: TextStyle(color: Colors.white38, fontSize: 10),
+              children: [
+                TextSpan(
+                  text: 'Ctrl',
+                  style: TextStyle(
+                    color: Colors.white60,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+                TextSpan(text: ' o '),
+                TextSpan(
+                  text: 'Alt',
+                  style: TextStyle(
+                    color: Colors.white60,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+                TextSpan(text: ' + clic para seleccionar una 2ª parada'),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

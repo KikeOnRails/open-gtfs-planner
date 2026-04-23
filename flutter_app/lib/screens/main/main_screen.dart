@@ -65,6 +65,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     ref.read(agencyVisibilityProvider.notifier).clearAll();
     ref.read(selectedStopProvider.notifier).state = null;
     ref.read(selectedTripProvider.notifier).state = null;
+    ref.read(secondSelectedStopProvider.notifier).state = null;
     ref.invalidate(activeServicesProvider);
     ref.invalidate(activeTripsProvider);
   }

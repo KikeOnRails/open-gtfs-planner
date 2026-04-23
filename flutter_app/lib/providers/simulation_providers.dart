@@ -189,6 +189,9 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
 final selectedStopProvider = StateProvider<StopModel?>((ref) => null);
 final selectedTripProvider = StateProvider<TripModel?>((ref) => null);
 
+/// Second stop selected via Ctrl/Alt+click for multi-stop operations
+final secondSelectedStopProvider = StateProvider<StopModel?>((ref) => null);
+
 // ---------------------------------------------------------------------------
 // Stop times for selected stop
 // ---------------------------------------------------------------------------

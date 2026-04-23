@@ -187,6 +187,61 @@ class GtfsRepository {
     return StopModel.fromMap(rows.first);
   }
 
+  /// Merge two stops into one unified stop.
+  ///
+  /// Creates a new stop in [gtfsFileId] with the given attributes, then
+  /// redirects all stop_times that reference [stopAId] or [stopBId] to the
+  /// new stop. Optionally deletes the originals.
+  ///
+  /// Returns the newly created [StopModel].
+  static Future<StopModel> mergeStops({
+    required int gtfsFileId,
+    required int stopAId,
+    required int stopBId,
+    required String newStopId,
+    required String? newStopName,
+    required double newLat,
+    required double newLon,
+    required String? newStopCode,
+    required bool deleteOriginals,
+  }) async {
+    final db = await _db;
+    int newId = -1;
+
+    await db.transaction((txn) async {
+      // 1. Insert unified stop
+      newId = await txn.insert('gtfs_stops', {
+        'gtfs_file_id': gtfsFileId,
+        'stop_id': newStopId,
+        'stop_name': newStopName,
+        'stop_lat': newLat,
+        'stop_lon': newLon,
+        'stop_code': newStopCode,
+      });
+
+      // 2. Redirect all stop_times from A and B to the new stop
+      await txn.rawUpdate(
+        'UPDATE gtfs_stop_times SET stop_db_id = ? WHERE stop_db_id = ?',
+        [newId, stopAId],
+      );
+      await txn.rawUpdate(
+        'UPDATE gtfs_stop_times SET stop_db_id = ? WHERE stop_db_id = ?',
+        [newId, stopBId],
+      );
+
+      // 3. Delete originals if requested
+      if (deleteOriginals) {
+        await txn.delete('gtfs_stops',
+            where: 'id = ?', whereArgs: [stopAId]);
+        await txn.delete('gtfs_stops',
+            where: 'id = ?', whereArgs: [stopBId]);
+      }
+    });
+
+    final rows = await db.query('gtfs_stops', where: 'id = ?', whereArgs: [newId]);
+    return StopModel.fromMap(rows.first);
+  }
+
   // Get unique stops for a specific route
   static Future<List<StopModel>> getStopsByRoute(int routeDbId) async {
     final db = await _db;
