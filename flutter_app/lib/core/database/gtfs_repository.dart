@@ -194,6 +194,30 @@ class GtfsRepository {
     return StopModel.fromMap(rows.first);
   }
 
+  static Future<StopModel> updateStopLocation(
+    int stopId,
+    double stopLat,
+    double stopLon,
+  ) async {
+    final db = await _db;
+    await db.update(
+      'gtfs_stops',
+      {
+        'stop_lat': stopLat,
+        'stop_lon': stopLon,
+      },
+      where: 'id = ?',
+      whereArgs: [stopId],
+    );
+
+    final updated = await getStopById(stopId);
+    if (updated == null) {
+      throw StateError(
+          'No se pudo recargar la parada $stopId tras actualizarla.');
+    }
+    return updated;
+  }
+
   /// Deletes a stop and all its dependent stop_times (via ON DELETE CASCADE).
   static Future<void> deleteStop(int stopId) async {
     final db = await _db;
@@ -254,7 +278,8 @@ class GtfsRepository {
       // showing their expeditions. The merged stop is a geographic reference.
     });
 
-    final rows = await db.query('gtfs_stops', where: 'id = ?', whereArgs: [newId]);
+    final rows =
+        await db.query('gtfs_stops', where: 'id = ?', whereArgs: [newId]);
     return StopModel.fromMap(rows.first);
   }
 
@@ -515,6 +540,85 @@ class GtfsRepository {
       if (sid != null && sid.isNotEmpty && !ids.contains(sid)) ids.add(sid);
     }
     return ids;
+  }
+
+  static Future<List<RouteShapeOptionModel>> getEditableShapeOptions(
+      int routeDbId) async {
+    final db = await _db;
+    final options = <String, RouteShapeOptionModel>{};
+
+    final patternRows = await db.query(
+      'route_patterns',
+      columns: ['shape_id', 'name', 'direction_id'],
+      where: 'route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ?',
+      whereArgs: [routeDbId, ''],
+      orderBy: 'name COLLATE NOCASE ASC, id ASC',
+    );
+
+    for (final row in patternRows) {
+      final shapeId = row['shape_id'] as String?;
+      if (shapeId == null || shapeId.isEmpty) continue;
+      final name = (row['name'] as String?)?.trim();
+      final directionId = row['direction_id'] as int?;
+      final directionLabel = switch (directionId) {
+        0 => 'Ida',
+        1 => 'Vuelta',
+        _ => null,
+      };
+      final label =
+          name?.isNotEmpty == true ? name! : (directionLabel ?? shapeId);
+      options.putIfAbsent(
+        shapeId,
+        () => RouteShapeOptionModel(
+          shapeId: shapeId,
+          label: label,
+          subtitle: directionLabel == null
+              ? 'Trayecto'
+              : 'Trayecto · $directionLabel',
+        ),
+      );
+    }
+
+    final tripRows = await db.rawQuery('''
+      SELECT shape_id,
+             MAX(NULLIF(trip_headsign, '')) AS trip_headsign,
+             MIN(direction_id) AS direction_id,
+             COUNT(*) AS trip_count
+      FROM gtfs_trips
+      WHERE route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ''
+      GROUP BY shape_id
+      ORDER BY trip_headsign COLLATE NOCASE ASC, shape_id ASC
+    ''', [routeDbId]);
+
+    for (final row in tripRows) {
+      final shapeId = row['shape_id'] as String?;
+      if (shapeId == null || shapeId.isEmpty || options.containsKey(shapeId)) {
+        continue;
+      }
+      final headsign = (row['trip_headsign'] as String?)?.trim();
+      final directionId = row['direction_id'] as int?;
+      final tripCount = row['trip_count'] as int? ?? 0;
+      final directionLabel = switch (directionId) {
+        0 => 'Ida',
+        1 => 'Vuelta',
+        _ => null,
+      };
+
+      final subtitleParts = <String>[
+        if (directionLabel != null) directionLabel,
+        if (tripCount > 0) '$tripCount expedicion${tripCount == 1 ? '' : 'es'}',
+      ];
+
+      options[shapeId] = RouteShapeOptionModel(
+        shapeId: shapeId,
+        label: headsign?.isNotEmpty == true ? headsign! : shapeId,
+        subtitle: subtitleParts.isEmpty
+            ? 'Shape importado'
+            : subtitleParts.join(' · '),
+      );
+    }
+
+    return options.values.toList(growable: false);
   }
 
   // Get all shapes for a specific route
@@ -801,15 +905,18 @@ class GtfsRepository {
     // Only relevant if the route has trips (imported data) OR manual patterns.
     final db = await _db;
     final tripCount = Sqflite.firstIntValue(await db.rawQuery(
-      'SELECT COUNT(*) FROM gtfs_trips WHERE route_db_id = ?',
-      [routeDbId],
-    )) ?? 0;
+          'SELECT COUNT(*) FROM gtfs_trips WHERE route_db_id = ?',
+          [routeDbId],
+        )) ??
+        0;
     // Check manual trayecto shapes
     final patternShapeCount = Sqflite.firstIntValue(await db.rawQuery(
-      "SELECT COUNT(*) FROM route_patterns WHERE route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ''",
-      [routeDbId],
-    )) ?? 0;
-    if (tripCount == 0 && patternShapeCount == 0) return true; // New manual route, no warning
+          "SELECT COUNT(*) FROM route_patterns WHERE route_db_id = ? AND shape_id IS NOT NULL AND shape_id != ''",
+          [routeDbId],
+        )) ??
+        0;
+    if (tripCount == 0 && patternShapeCount == 0)
+      return true; // New manual route, no warning
     if (patternShapeCount > 0) return true;
     final shapeIds = await getShapeIdsByRoute(routeDbId);
     return shapeIds.isNotEmpty;
@@ -984,7 +1091,8 @@ class GtfsRepository {
 
   static Future<RoutePatternModel?> getRoutePatternById(int id) async {
     final db = await _db;
-    final rows = await db.query('route_patterns', where: 'id = ?', whereArgs: [id]);
+    final rows =
+        await db.query('route_patterns', where: 'id = ?', whereArgs: [id]);
     if (rows.isEmpty) return null;
     return RoutePatternModel.fromMap(rows.first);
   }
@@ -1010,7 +1118,12 @@ class GtfsRepository {
       whereArgs: [gtfsFileId, shapeId],
       orderBy: 'shape_pt_sequence ASC',
     );
-    return rows.map((r) => ((r['shape_pt_lat'] as num).toDouble(), (r['shape_pt_lon'] as num).toDouble())).toList();
+    return rows
+        .map((r) => (
+              (r['shape_pt_lat'] as num).toDouble(),
+              (r['shape_pt_lon'] as num).toDouble()
+            ))
+        .toList();
   }
 
   /// Distinct service_ids available in this GTFS file (from calendar + calendar_dates).
@@ -1115,15 +1228,17 @@ class GtfsRepository {
       ORDER BY t.service_id ASC, dep_time ASC
     ''', [routeDbId]);
 
-    return rows.map((r) => ExpedicionSummary(
-          tripDbId: r['trip_id'] as int,
-          serviceId: r['service_id'] as String,
-          headsign: r['trip_headsign'] as String?,
-          directionId: r['direction_id'] as int?,
-          departureTime: r['dep_time'] as String?,
-          arrivalTime: r['arr_time'] as String?,
-          stopCount: (r['stop_count'] as int?) ?? 0,
-        )).toList();
+    return rows
+        .map((r) => ExpedicionSummary(
+              tripDbId: r['trip_id'] as int,
+              serviceId: r['service_id'] as String,
+              headsign: r['trip_headsign'] as String?,
+              directionId: r['direction_id'] as int?,
+              departureTime: r['dep_time'] as String?,
+              arrivalTime: r['arr_time'] as String?,
+              stopCount: (r['stop_count'] as int?) ?? 0,
+            ))
+        .toList();
   }
 
   /// Deletes a single trip and its stop_times.
@@ -1132,10 +1247,10 @@ class GtfsRepository {
     await db.transaction((txn) async {
       await txn.delete('gtfs_stop_times',
           where: 'trip_db_id = ?', whereArgs: [tripDbId]);
-      await txn.delete('gtfs_trips',
-          where: 'id = ?', whereArgs: [tripDbId]);
+      await txn.delete('gtfs_trips', where: 'id = ?', whereArgs: [tripDbId]);
     });
   }
+
   static Future<void> savePatternStops(
       int patternId, List<Map<String, dynamic>> stops) async {
     final db = await _db;
@@ -1155,7 +1270,8 @@ class GtfsRepository {
     });
   }
 
-  static Future<List<RoutePatternStopModel>> getPatternStops(int patternId) async {
+  static Future<List<RoutePatternStopModel>> getPatternStops(
+      int patternId) async {
     final db = await _db;
     final rows = await db.query(
       'route_pattern_stops',
@@ -1166,7 +1282,8 @@ class GtfsRepository {
     final models = rows.map(RoutePatternStopModel.fromMap).toList();
     // Load stop models
     for (final ps in models) {
-      final stopRows = await db.query('gtfs_stops', where: 'id = ?', whereArgs: [ps.stopDbId]);
+      final stopRows = await db
+          .query('gtfs_stops', where: 'id = ?', whereArgs: [ps.stopDbId]);
       if (stopRows.isNotEmpty) ps.stop = StopModel.fromMap(stopRows.first);
     }
     return models;
@@ -1214,8 +1331,7 @@ class GtfsRepository {
       'name': name,
       'stop_ids': stopIds.join(','),
     });
-    final rows =
-        await db.query('corridors', where: 'id = ?', whereArgs: [id]);
+    final rows = await db.query('corridors', where: 'id = ?', whereArgs: [id]);
     final corredor = CorredorModel.fromMap(rows.first);
     corredor.stops = await _loadStopsForCorredor(corredor.stopIds);
     return corredor;
@@ -1274,8 +1390,7 @@ class GtfsRepository {
 
     final allTripIds = tripRows.map((r) => r['trip_id'] as int).toList();
     final routeByTrip = {
-      for (final r in tripRows)
-        r['trip_id'] as int: r['route_db_id'] as int,
+      for (final r in tripRows) r['trip_id'] as int: r['route_db_id'] as int,
     };
     final tripPH = allTripIds.map((_) => '?').join(',');
 
@@ -1328,9 +1443,7 @@ class GtfsRepository {
       final stops = entry.value;
       for (int i = 0; i < stops.length - 1; i++) {
         if (stops[i] == stops[i + 1]) continue;
-        pairRoutes
-            .putIfAbsent((stops[i], stops[i + 1]), () => {})
-            .add(routeId);
+        pairRoutes.putIfAbsent((stops[i], stops[i + 1]), () => {}).add(routeId);
       }
     }
 
@@ -1391,7 +1504,8 @@ class GtfsRepository {
         final routeIds = routes.toList()..sort();
         final key = '${path.join(',')}|${routeIds.join(',')}';
         if (seenChains.add(key)) {
-          rawChains.add((stops: List<int>.from(path), routes: Set<int>.from(routes)));
+          rawChains.add(
+              (stops: List<int>.from(path), routes: Set<int>.from(routes)));
         }
       }
     }
@@ -1435,7 +1549,8 @@ class GtfsRepository {
       return false;
     }
 
-    final verifiedByStops = <String, ({List<int> stops, Set<int> routes, int totalTrips})>{};
+    final verifiedByStops =
+        <String, ({List<int> stops, Set<int> routes, int totalTrips})>{};
     for (final chainStops in candidateChains) {
       final firstStopId = chainStops.first;
       final lastStopId = chainStops.last;
@@ -1491,14 +1606,14 @@ class GtfsRepository {
     final sPH = allStopIds.map((_) => '?').join(',');
     final rPH = allRouteIds.map((_) => '?').join(',');
 
-    final stopModelRows =
-        await db.rawQuery('SELECT * FROM gtfs_stops WHERE id IN ($sPH)', allStopIds);
+    final stopModelRows = await db.rawQuery(
+        'SELECT * FROM gtfs_stops WHERE id IN ($sPH)', allStopIds);
     final Map<int, StopModel> stopsById = {
       for (final r in stopModelRows) r['id'] as int: StopModel.fromMap(r),
     };
 
-    final routeModelRows =
-        await db.rawQuery('SELECT * FROM gtfs_routes WHERE id IN ($rPH)', allRouteIds);
+    final routeModelRows = await db.rawQuery(
+        'SELECT * FROM gtfs_routes WHERE id IN ($rPH)', allRouteIds);
     final Map<int, RouteModel> routesById = {
       for (final r in routeModelRows) r['id'] as int: RouteModel.fromMap(r),
     };
@@ -1506,8 +1621,10 @@ class GtfsRepository {
     // --- Step 7: assemble results ---------------------------------------------
     final result = <CorredorDetectado>[];
     for (final chain in verifiedChains) {
-      final stops =
-          chain.stops.map((id) => stopsById[id]).whereType<StopModel>().toList();
+      final stops = chain.stops
+          .map((id) => stopsById[id])
+          .whereType<StopModel>()
+          .toList();
       if (stops.length < 2) continue;
 
       final routeIds = chain.routes.toList()..sort();
@@ -1671,9 +1788,8 @@ class GtfsRepository {
     bool visitedInOrder(List<(int, int)> visited, List<int> required) {
       int lastSeq = -1;
       for (final stopId in required) {
-        final match = visited
-            .where((v) => v.$1 == stopId && v.$2 > lastSeq)
-            .toList();
+        final match =
+            visited.where((v) => v.$1 == stopId && v.$2 > lastSeq).toList();
         if (match.isEmpty) return false;
         lastSeq = match.map((v) => v.$2).reduce((a, b) => a < b ? a : b);
       }
@@ -1747,8 +1863,8 @@ class GtfsRepository {
     }).toList();
 
     // Sort by route short name
-    stats.sort((a, b) => (a.route.routeShortName ?? '')
-        .compareTo(b.route.routeShortName ?? ''));
+    stats.sort((a, b) =>
+        (a.route.routeShortName ?? '').compareTo(b.route.routeShortName ?? ''));
 
     return CorredorAnalysis(corredor: corredor, routeStats: stats);
   }

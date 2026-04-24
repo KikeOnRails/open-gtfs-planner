@@ -15,8 +15,11 @@ class StopInfoPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final stop = ref.watch(selectedStopProvider);
+    final movingStop = ref.watch(movingStopProvider);
 
     if (stop == null) return const SizedBox.shrink();
+
+    final isMovingThisStop = movingStop?.id == stop.id;
 
     return _InfoCard(
       child: Column(
@@ -27,8 +30,48 @@ class StopInfoPanel extends ConsumerWidget {
             icon: Icons.place_outlined,
             title: stop.displayName,
             subtitle: 'Parada · ID ${stop.stopId}',
-            onClose: () =>
-                ref.read(selectedStopProvider.notifier).state = null,
+            onClose: () {
+              ref.read(selectedStopProvider.notifier).state = null;
+              if (isMovingThisStop) {
+                ref.read(movingStopProvider.notifier).state = null;
+              }
+            },
+          ),
+          InkWell(
+            onTap: () => _activateStopMoveMode(context, ref, stop),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.08),
+                border: const Border(
+                  bottom: BorderSide(color: Color(0xFF2E3340), width: 1),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    isMovingThisStop ? Icons.close : Icons.open_with,
+                    size: 14,
+                    color: Colors.amber,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      isMovingThisStop
+                          ? 'Cancelar mover parada'
+                          : 'Mover parada en el mapa',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.amber,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right,
+                      size: 14, color: Colors.amber),
+                ],
+              ),
+            ),
           ),
           // Transfer review action
           InkWell(
@@ -88,8 +131,7 @@ class StopInfoPanel extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  Icon(Icons.chevron_right,
-                      size: 14, color: Color(0xFF7C3AED)),
+                  Icon(Icons.chevron_right, size: 14, color: Color(0xFF7C3AED)),
                 ],
               ),
             ),
@@ -119,8 +161,7 @@ class StopInfoPanel extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  Icon(Icons.chevron_right,
-                      size: 14, color: Colors.redAccent),
+                  Icon(Icons.chevron_right, size: 14, color: Colors.redAccent),
                 ],
               ),
             ),
@@ -131,6 +172,45 @@ class StopInfoPanel extends ConsumerWidget {
       ),
     );
   }
+}
+
+void _activateStopMoveMode(
+    BuildContext context, WidgetRef ref, StopModel stop) {
+  final movingStop = ref.read(movingStopProvider);
+  final shouldDisable = movingStop?.id == stop.id;
+  final messenger = ScaffoldMessenger.of(context);
+
+  ref.read(selectedStopProvider.notifier).state = stop;
+  ref.read(secondSelectedStopProvider.notifier).state = null;
+  ref.read(selectedTripProvider.notifier).state = null;
+  ref.read(movingStopProvider.notifier).state = shouldDisable ? null : stop;
+
+  messenger.showSnackBar(
+    SnackBar(
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.all(16),
+      backgroundColor:
+          shouldDisable ? const Color(0xFF545B66) : const Color(0xFF8A5A00),
+      content: Row(
+        children: [
+          Icon(
+            shouldDisable ? Icons.close : Icons.open_with,
+            color: Colors.white,
+            size: 16,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              shouldDisable
+                  ? 'Movimiento cancelado para "${stop.displayName}"'
+                  : 'Haz clic en el mapa para recolocar "${stop.displayName}"',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 Future<void> _confirmDeleteStop(
@@ -148,13 +228,13 @@ Future<void> _confirmDeleteStop(
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(false),
-          child: const Text('Cancelar',
-              style: TextStyle(color: Colors.white54)),
+          child:
+              const Text('Cancelar', style: TextStyle(color: Colors.white54)),
         ),
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(true),
-          child: const Text('Eliminar',
-              style: TextStyle(color: Colors.redAccent)),
+          child:
+              const Text('Eliminar', style: TextStyle(color: Colors.redAccent)),
         ),
       ],
     ),
@@ -165,6 +245,7 @@ Future<void> _confirmDeleteStop(
 
   ref.read(selectedStopProvider.notifier).state = null;
   ref.read(secondSelectedStopProvider.notifier).state = null;
+  ref.read(movingStopProvider.notifier).state = null;
   ref.invalidate(gtfsFilesProvider);
   ref.read(stopsCacheVersionProvider.notifier).state++;
 
@@ -217,8 +298,8 @@ class _NextArrivals extends ConsumerWidget {
             child: Center(
               child: Text(
                 'Sin horarios para la fecha seleccionada',
-                style: TextStyle(
-                    color: AppTheme.onSurfaceVariant, fontSize: 12),
+                style:
+                    TextStyle(color: AppTheme.onSurfaceVariant, fontSize: 12),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -227,16 +308,16 @@ class _NextArrivals extends ConsumerWidget {
 
         // Show next arrivals from simulation time
         final upcoming = stopTimes
-            .where((st) =>
-                st.getArrivalTimeInDate(simTime.dateTime)
-                    .isAfter(simTime.dateTime))
+            .where((st) => st
+                .getArrivalTimeInDate(simTime.dateTime)
+                .isAfter(simTime.dateTime))
             .take(10)
             .toList();
 
         final past = stopTimes
-            .where((st) =>
-                !st.getArrivalTimeInDate(simTime.dateTime)
-                    .isAfter(simTime.dateTime))
+            .where((st) => !st
+                .getArrivalTimeInDate(simTime.dateTime)
+                .isAfter(simTime.dateTime))
             .toList()
             .reversed
             .take(3)
@@ -261,8 +342,7 @@ class _NextArrivals extends ConsumerWidget {
               _SectionHeader(label: 'Próximas llegadas'),
               if (upcoming.isEmpty)
                 const Padding(
-                  padding: EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 8),
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: Text(
                     'No hay más llegadas hoy',
                     style: TextStyle(
@@ -318,9 +398,8 @@ class _StopTimeRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final route = stopTime.trip?.route;
-    final routeColor = route != null
-        ? hexToColor(route.routeColor)
-        : AppTheme.primary;
+    final routeColor =
+        route != null ? hexToColor(route.routeColor) : AppTheme.primary;
 
     final arrivalDt = stopTime.getArrivalTimeInDate(simDateTime);
     final diff = arrivalDt.difference(simDateTime);
@@ -420,9 +499,8 @@ class TripInfoPanel extends ConsumerWidget {
 
     final simTime = ref.watch(simulationTimeProvider);
     final route = trip.route;
-    final routeColor = route != null
-        ? hexToColor(route.routeColor)
-        : AppTheme.primary;
+    final routeColor =
+        route != null ? hexToColor(route.routeColor) : AppTheme.primary;
 
     return _InfoCard(
       child: Column(
@@ -434,8 +512,7 @@ class TripInfoPanel extends ConsumerWidget {
             title: route?.displayName ?? 'Vehículo',
             subtitle: trip.tripHeadsign ?? 'Dirección desconocida',
             badgeColor: routeColor,
-            onClose: () =>
-                ref.read(selectedTripProvider.notifier).state = null,
+            onClose: () => ref.read(selectedTripProvider.notifier).state = null,
           ),
           const Divider(height: 1),
           Padding(
@@ -445,8 +522,7 @@ class TripInfoPanel extends ConsumerWidget {
               children: [
                 _InfoRow(label: 'Trip ID', value: trip.tripId),
                 _InfoRow(label: 'Servicio', value: trip.serviceId),
-                _InfoRow(
-                    label: 'Inicio', value: trip.getStartHour()),
+                _InfoRow(label: 'Inicio', value: trip.getStartHour()),
                 _InfoRow(label: 'Fin', value: trip.getEndHour()),
                 _InfoRow(
                   label: 'Progreso',
@@ -471,8 +547,7 @@ class TripInfoPanel extends ConsumerWidget {
           if (trip.stopTimes != null) ...[
             const Divider(height: 1),
             Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               child: Text(
                 'PARADAS EN RUTA',
                 style: const TextStyle(
@@ -491,12 +566,11 @@ class TripInfoPanel extends ConsumerWidget {
                 itemCount: trip.stopTimes!.length,
                 itemBuilder: (_, i) {
                   final st = trip.stopTimes![i];
-                  final arrivalDt =
-                      st.getArrivalTimeInDate(simTime.dateTime);
+                  final arrivalDt = st.getArrivalTimeInDate(simTime.dateTime);
                   final isPast = arrivalDt.isBefore(simTime.dateTime);
                   return Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                     child: Row(
                       children: [
                         Container(
@@ -516,8 +590,7 @@ class TripInfoPanel extends ConsumerWidget {
                             style: TextStyle(
                               fontSize: 11,
                               color: isPast
-                                  ? AppTheme.onSurfaceVariant
-                                      .withOpacity(0.5)
+                                  ? AppTheme.onSurfaceVariant.withOpacity(0.5)
                                   : AppTheme.onSurface,
                             ),
                             overflow: TextOverflow.ellipsis,
@@ -604,8 +677,7 @@ class _PanelHeader extends StatelessWidget {
               color: (badgeColor ?? AppTheme.primary).withOpacity(0.15),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Icon(icon,
-                color: badgeColor ?? AppTheme.primary, size: 16),
+            child: Icon(icon, color: badgeColor ?? AppTheme.primary, size: 16),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -637,8 +709,8 @@ class _PanelHeader extends StatelessWidget {
             borderRadius: BorderRadius.circular(6),
             child: const Padding(
               padding: EdgeInsets.all(4),
-              child: Icon(Icons.close,
-                  size: 16, color: AppTheme.onSurfaceVariant),
+              child:
+                  Icon(Icons.close, size: 16, color: AppTheme.onSurfaceVariant),
             ),
           ),
         ],

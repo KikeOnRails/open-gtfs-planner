@@ -163,13 +163,11 @@ class ActiveTripsNotifier extends AsyncNotifier<List<TripModel>> {
 
     // Excluir trips de agencias ocultas
     if (hiddenAgencyIds.isNotEmpty) {
-      filtered = filtered
-          .where((t) {
-            final agencyDbId = t.route?.agencyDbId;
-            if (agencyDbId == null) return true;
-            return !hiddenAgencyIds.contains(agencyDbId);
-          })
-          .toList();
+      filtered = filtered.where((t) {
+        final agencyDbId = t.route?.agencyDbId;
+        if (agencyDbId == null) return true;
+        return !hiddenAgencyIds.contains(agencyDbId);
+      }).toList();
     }
 
     if (visibleRouteIds.isEmpty) {
@@ -191,6 +189,9 @@ final selectedTripProvider = StateProvider<TripModel?>((ref) => null);
 
 /// Second stop selected via Ctrl/Alt+click for multi-stop operations
 final secondSelectedStopProvider = StateProvider<StopModel?>((ref) => null);
+
+/// Stop currently waiting to be relocated on the map.
+final movingStopProvider = StateProvider<StopModel?>((ref) => null);
 
 // ---------------------------------------------------------------------------
 // Stop times for selected stop

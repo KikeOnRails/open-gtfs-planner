@@ -101,8 +101,9 @@ class RouteModel {
     this.simulationVisible = false,
   });
 
-  String get displayName =>
-      routeShortName?.isNotEmpty == true ? routeShortName! : (routeLongName ?? routeId);
+  String get displayName => routeShortName?.isNotEmpty == true
+      ? routeShortName!
+      : (routeLongName ?? routeId);
 
   String get hexColor {
     if (routeColor != null && routeColor!.isNotEmpty) {
@@ -137,6 +138,7 @@ class StopModel {
   final String? stopCode;
   final String? stopDesc;
   final bool isMerged;
+
   /// IDs of the original stops that were merged into this one (only set when isMerged == true).
   final List<int> mergedFromStopIds;
 
@@ -154,6 +156,32 @@ class StopModel {
   });
 
   String get displayName => stopName?.isNotEmpty == true ? stopName! : stopId;
+
+  StopModel copyWith({
+    int? id,
+    int? gtfsFileId,
+    String? stopId,
+    String? stopName,
+    double? stopLat,
+    double? stopLon,
+    String? stopCode,
+    String? stopDesc,
+    bool? isMerged,
+    List<int>? mergedFromStopIds,
+  }) {
+    return StopModel(
+      id: id ?? this.id,
+      gtfsFileId: gtfsFileId ?? this.gtfsFileId,
+      stopId: stopId ?? this.stopId,
+      stopName: stopName ?? this.stopName,
+      stopLat: stopLat ?? this.stopLat,
+      stopLon: stopLon ?? this.stopLon,
+      stopCode: stopCode ?? this.stopCode,
+      stopDesc: stopDesc ?? this.stopDesc,
+      isMerged: isMerged ?? this.isMerged,
+      mergedFromStopIds: mergedFromStopIds ?? this.mergedFromStopIds,
+    );
+  }
 
   factory StopModel.fromMap(Map<String, dynamic> map) {
     return StopModel(
@@ -194,7 +222,7 @@ class TripModel {
   // Computed datetimes
   DateTime? startDatetime;
   DateTime? endDatetime;
-  
+
   // Precomputed arc-length positions (metres from shape start) for each stop.
   // Computed with a monotonic forward projection, so they are always increasing.
   // Works correctly for circular routes where two vertices share the same location.
@@ -245,15 +273,17 @@ class TripModel {
   bool isActiveAt(DateTime d) {
     if (startDatetime == null || endDatetime == null) return false;
     return (d.isAfter(startDatetime!) || d.isAtSameMomentAs(startDatetime!)) &&
-           (d.isBefore(endDatetime!) || d.isAtSameMomentAs(endDatetime!));
+        (d.isBefore(endDatetime!) || d.isAtSameMomentAs(endDatetime!));
   }
 
   double getTripPercent(DateTime d) {
     if (startDatetime == null || endDatetime == null) return 0;
     if (!d.isAfter(startDatetime!)) return 0;
     if (!d.isBefore(endDatetime!)) return 100;
-    final max = endDatetime!.millisecondsSinceEpoch - startDatetime!.millisecondsSinceEpoch;
-    final current = d.millisecondsSinceEpoch - startDatetime!.millisecondsSinceEpoch;
+    final max = endDatetime!.millisecondsSinceEpoch -
+        startDatetime!.millisecondsSinceEpoch;
+    final current =
+        d.millisecondsSinceEpoch - startDatetime!.millisecondsSinceEpoch;
     return (current / max) * 100;
   }
 
@@ -560,6 +590,18 @@ class RoutePatternStopModel {
   }
 }
 
+class RouteShapeOptionModel {
+  final String shapeId;
+  final String label;
+  final String? subtitle;
+
+  const RouteShapeOptionModel({
+    required this.shapeId,
+    required this.label,
+    this.subtitle,
+  });
+}
+
 class ServiceInfo {
   final String serviceId;
   final int gtfsFileId;
@@ -731,7 +773,8 @@ class CorredorAnalysis {
     int totalMinutes = 0;
     int count = 0;
     for (int i = 1; i < sortedTimes.length; i++) {
-      final gap = _timeToMinutes(sortedTimes[i]) - _timeToMinutes(sortedTimes[i - 1]);
+      final gap =
+          _timeToMinutes(sortedTimes[i]) - _timeToMinutes(sortedTimes[i - 1]);
       if (gap >= 0) {
         totalMinutes += gap;
         count++;
@@ -755,7 +798,7 @@ class ExpedicionSummary {
   final String? headsign;
   final int? directionId;
   final String? departureTime; // "HH:MM:SS"
-  final String? arrivalTime;   // "HH:MM:SS"
+  final String? arrivalTime; // "HH:MM:SS"
   final int stopCount;
 
   const ExpedicionSummary({

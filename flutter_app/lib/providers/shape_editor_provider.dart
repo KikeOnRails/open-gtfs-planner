@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../core/database/gtfs_repository.dart';
+import '../models/gtfs_models.dart';
 
 // ---------------------------------------------------------------------------
 // Edit mode
@@ -32,12 +33,16 @@ class ShapeEditState {
   final int gtfsFileId;
   final String shapeId;
   final List<LatLng> points;
+  final List<LatLng> originalPoints;
   final List<List<LatLng>> undoStack;
   final List<List<LatLng>> redoStack;
   final Color routeColor;
   final String routeName;
+  final String activeShapeLabel;
+  final List<RouteShapeOptionModel> availableShapes;
   final bool isSaving;
   final ShapeEditMode mode;
+
   /// True while the user is actively dragging a point (suppresses map pan).
   final bool isDraggingPoint;
 
@@ -45,10 +50,13 @@ class ShapeEditState {
     required this.gtfsFileId,
     required this.shapeId,
     required this.points,
+    required this.originalPoints,
     this.undoStack = const [],
     this.redoStack = const [],
     this.routeColor = const Color(0xFF00AF8C),
     this.routeName = '',
+    this.activeShapeLabel = '',
+    this.availableShapes = const [],
     this.isSaving = false,
     this.mode = ShapeEditMode.normal,
     this.isDraggingPoint = false,
@@ -56,23 +64,31 @@ class ShapeEditState {
 
   bool get canUndo => undoStack.isNotEmpty;
   bool get canRedo => redoStack.isNotEmpty;
+  bool get hasUnsavedChanges => !_samePointList(points, originalPoints);
 
   ShapeEditState copyWith({
+    String? shapeId,
     List<LatLng>? points,
+    List<LatLng>? originalPoints,
     List<List<LatLng>>? undoStack,
     List<List<LatLng>>? redoStack,
+    String? activeShapeLabel,
+    List<RouteShapeOptionModel>? availableShapes,
     bool? isSaving,
     ShapeEditMode? mode,
     bool? isDraggingPoint,
   }) =>
       ShapeEditState(
         gtfsFileId: gtfsFileId,
-        shapeId: shapeId,
+        shapeId: shapeId ?? this.shapeId,
         points: points ?? this.points,
+        originalPoints: originalPoints ?? this.originalPoints,
         undoStack: undoStack ?? this.undoStack,
         redoStack: redoStack ?? this.redoStack,
         routeColor: routeColor,
         routeName: routeName,
+        activeShapeLabel: activeShapeLabel ?? this.activeShapeLabel,
+        availableShapes: availableShapes ?? this.availableShapes,
         isSaving: isSaving ?? this.isSaving,
         mode: mode ?? this.mode,
         isDraggingPoint: isDraggingPoint ?? this.isDraggingPoint,
@@ -92,14 +108,59 @@ class ShapeEditorNotifier extends StateNotifier<ShapeEditState?> {
     required List<LatLng> points,
     Color routeColor = const Color(0xFF00AF8C),
     String routeName = '',
+    String activeShapeLabel = '',
+    List<RouteShapeOptionModel> availableShapes = const [],
   }) {
+    final immutablePoints =
+        List<LatLng>.unmodifiable(List<LatLng>.from(points));
     state = ShapeEditState(
       gtfsFileId: gtfsFileId,
       shapeId: shapeId,
-      points: List.unmodifiable(List<LatLng>.from(points)),
+      points: immutablePoints,
+      originalPoints: immutablePoints,
       routeColor: routeColor,
       routeName: routeName,
+      activeShapeLabel: activeShapeLabel,
+      availableShapes: List.unmodifiable(availableShapes),
     );
+  }
+
+  Future<bool> switchToShape(RouteShapeOptionModel option) async {
+    final s = state;
+    if (s == null) return false;
+    if (s.shapeId == option.shapeId) return true;
+
+    state = s.copyWith(isSaving: true);
+    try {
+      final shapes = await GtfsRepository.getShapesByRouteShapeId(
+        s.gtfsFileId,
+        option.shapeId,
+      );
+      if (shapes.isEmpty) {
+        state = s.copyWith(isSaving: false);
+        return false;
+      }
+
+      final points = List<LatLng>.unmodifiable(
+        shapes.map((shape) => LatLng(shape.shapePtLat, shape.shapePtLon)),
+      );
+
+      state = s.copyWith(
+        shapeId: option.shapeId,
+        points: points,
+        originalPoints: points,
+        undoStack: const [],
+        redoStack: const [],
+        activeShapeLabel: option.label,
+        isSaving: false,
+        mode: ShapeEditMode.normal,
+        isDraggingPoint: false,
+      );
+      return true;
+    } catch (_) {
+      state = s.copyWith(isSaving: false);
+      return false;
+    }
   }
 
   void setMode(ShapeEditMode mode) {
@@ -239,6 +300,18 @@ class ShapeEditorNotifier extends StateNotifier<ShapeEditState?> {
       return false;
     }
   }
+}
+
+bool _samePointList(List<LatLng> a, List<LatLng> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var index = 0; index < a.length; index++) {
+    if (a[index].latitude != b[index].latitude ||
+        a[index].longitude != b[index].longitude) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

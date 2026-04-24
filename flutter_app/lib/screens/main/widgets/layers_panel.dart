@@ -234,7 +234,6 @@ class _LayersPanelState extends ConsumerState<LayersPanel> {
       itemBuilder: (_, i) => _GtfsFileLayer(gtfsFile: files[i]),
     );
   }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -326,7 +325,8 @@ class _GtfsFileLayerState extends ConsumerState<_GtfsFileLayer> {
                   icon: Icons.add_road,
                   active: false,
                   tooltip: 'Nueva ruta',
-                  onTap: () => showCreateRouteDialog(context, ref, widget.gtfsFile),
+                  onTap: () =>
+                      showCreateRouteDialog(context, ref, widget.gtfsFile),
                   activeColor: AppTheme.primary,
                 ),
                 const SizedBox(width: 4),
@@ -472,22 +472,21 @@ class _AgencyLayerState extends ConsumerState<_AgencyLayer> {
                           ? Icons.visibility_outlined
                           : Icons.visibility_off_outlined,
                       active: isVisible,
-                      tooltip: isVisible
-                          ? 'Ocultar agencia'
-                          : 'Mostrar agencia',
+                      tooltip:
+                          isVisible ? 'Ocultar agencia' : 'Mostrar agencia',
                       onTap: () {
-                        final notifier = ref.read(
-                            agencyVisibilityProvider.notifier);
+                        final notifier =
+                            ref.read(agencyVisibilityProvider.notifier);
                         notifier.set(widget.agency.id, !isVisible);
                         // Cascade: when hiding, also clear route-level
                         // shape/sim/stops visibility for this agency's routes
                         if (isVisible) {
-                          final shapeNotifier = ref.read(
-                              routeShapeVisibilityProvider.notifier);
-                          final simNotifier = ref.read(
-                              routeSimulationVisibilityProvider.notifier);
-                          final stopsNotifier = ref.read(
-                              routeStopsVisibilityProvider.notifier);
+                          final shapeNotifier =
+                              ref.read(routeShapeVisibilityProvider.notifier);
+                          final simNotifier = ref
+                              .read(routeSimulationVisibilityProvider.notifier);
+                          final stopsNotifier =
+                              ref.read(routeStopsVisibilityProvider.notifier);
                           for (final r in agencyRoutes) {
                             shapeNotifier.remove(r.id);
                             simNotifier.set(r.id, false);
@@ -555,7 +554,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       (r) => r.id == widget.routeId,
       orElse: () => throw Exception('Route not found'),
     );
-    
+
     if (route == null) return;
 
     // Show a persistent snackbar with progress info
@@ -567,7 +566,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           margin: const EdgeInsets.all(16),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           backgroundColor: const Color(0xFF1E2129),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           duration: const Duration(minutes: 2),
           content: Row(children: [
             const SizedBox(
@@ -606,11 +606,17 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.all(16),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          backgroundColor: count > 0 ? AppTheme.primaryDark : Colors.orange[800],
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          backgroundColor:
+              count > 0 ? AppTheme.primaryDark : Colors.orange[800],
           content: Row(children: [
-            Icon(count > 0 ? Icons.check_circle_outline : Icons.warning_amber_rounded,
-                color: Colors.white, size: 18),
+            Icon(
+                count > 0
+                    ? Icons.check_circle_outline
+                    : Icons.warning_amber_rounded,
+                color: Colors.white,
+                size: 18),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -632,7 +638,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.all(16),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           backgroundColor: Colors.red[800],
           content: Row(children: [
             const Icon(Icons.error_outline, color: Colors.white, size: 18),
@@ -656,16 +663,22 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       (r) => r.id == widget.routeId,
       orElse: () => throw Exception('Route not found'),
     );
-    
+
     if (route == null) return;
 
-    final shapeIds =
-        await GtfsRepository.getShapeIdsByRoute(route.id);
-    if (shapeIds.isEmpty) return;
+    final shapeOptions = await GtfsRepository.getEditableShapeOptions(route.id);
+    if (shapeOptions.isEmpty) return;
 
-    final shapeId = shapeIds.first;
+    var selectedShape = shapeOptions.first;
+    if (shapeOptions.length > 1) {
+      if (!mounted) return;
+      final picked = await _showShapePicker(context, route, shapeOptions);
+      if (picked == null) return;
+      selectedShape = picked;
+    }
+
     final shapes = await GtfsRepository.getShapesByRouteShapeId(
-        widget.gtfsFile.id, shapeId);
+        widget.gtfsFile.id, selectedShape.shapeId);
     if (shapes.isEmpty) return;
 
     final points =
@@ -674,10 +687,12 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
     if (!mounted) return;
     ref.read(shapeEditorProvider.notifier).startEditing(
           gtfsFileId: widget.gtfsFile.id,
-          shapeId: shapeId,
+          shapeId: selectedShape.shapeId,
           points: points,
           routeColor: hexToColor(route.routeColor),
           routeName: route.displayName,
+          activeShapeLabel: selectedShape.label,
+          availableShapes: shapeOptions,
         );
 
     // Center map on the shape
@@ -687,6 +702,84 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
     final avgLon =
         points.map((p) => p.longitude).reduce((a, b) => a + b) / points.length;
     mapController.move(LatLng(avgLat, avgLon), mapController.camera.zoom);
+  }
+
+  Future<RouteShapeOptionModel?> _showShapePicker(
+    BuildContext context,
+    RouteModel route,
+    List<RouteShapeOptionModel> shapeOptions,
+  ) {
+    return showDialog<RouteShapeOptionModel>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E2129),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: Text(
+          'Selecciona el itinerario a editar',
+          style: const TextStyle(color: Colors.white, fontSize: 15),
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                route.displayName,
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: shapeOptions.length,
+                  separatorBuilder: (_, __) => const Divider(
+                    height: 1,
+                    color: Color(0xFF2E3340),
+                  ),
+                  itemBuilder: (_, index) {
+                    final option = shapeOptions[index];
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(
+                        Icons.alt_route,
+                        color: Colors.orange,
+                        size: 18,
+                      ),
+                      title: Text(
+                        option.label,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
+                      ),
+                      subtitle: Text(
+                        option.subtitle ?? option.shapeId,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 11,
+                        ),
+                      ),
+                      onTap: () => Navigator.of(ctx).pop(option),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text(
+              'Cancelar',
+              style: TextStyle(color: Colors.white54),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showContextMenu(BuildContext context, Offset globalPosition) async {
@@ -728,7 +821,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
               style: TextStyle(fontSize: 12, color: Colors.greenAccent)),
         ]),
       ),
-      if (!hasShapes) ...[        
+      if (!hasShapes) ...[
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'generate_shapes',
@@ -747,7 +840,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
           ]),
         ),
       ],
-      if (hasShapes) ...[        
+      if (hasShapes) ...[
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'edit_shape',
@@ -765,7 +858,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
         child: const Row(children: [
           Icon(Icons.delete_outline, size: 14, color: Colors.redAccent),
           SizedBox(width: 8),
-          Text('Eliminar ruta', style: TextStyle(fontSize: 12, color: Colors.redAccent)),
+          Text('Eliminar ruta',
+              style: TextStyle(fontSize: 12, color: Colors.redAccent)),
         ]),
       ),
     ];
@@ -827,10 +921,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.all(16),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         backgroundColor: const Color(0xFF0D5C47),
         content: Row(children: [
           const Icon(Icons.check_circle, color: Colors.white, size: 16),
@@ -856,7 +948,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF1E2129),
-        title: const Text('Eliminar ruta', style: TextStyle(color: Colors.white, fontSize: 15)),
+        title: const Text('Eliminar ruta',
+            style: TextStyle(color: Colors.white, fontSize: 15)),
         content: Text(
           '¿Eliminar la ruta "${route.displayName}" y todos sus trayectos, expediciones y shapes?\n\nEsta acción no se puede deshacer.',
           style: const TextStyle(color: Color(0xFF8B9299), fontSize: 13),
@@ -889,7 +982,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       (r) => r.id == widget.routeId,
       orElse: () => throw Exception('Route not found'),
     );
-    
+
     if (route == null) return;
 
     Color currentColor = hexToColor(route.routeColor);
@@ -919,18 +1012,22 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
               child: const Text('Guardar'),
               onPressed: () async {
                 // Convert color to hex string without #
-                final hexString = currentColor.toARGB32().toRadixString(16).substring(2).toUpperCase();
+                final hexString = currentColor
+                    .toARGB32()
+                    .toRadixString(16)
+                    .substring(2)
+                    .toUpperCase();
                 await GtfsRepository.updateRouteColor(route.id, hexString);
-                
+
                 // Refresh the routes provider to update the UI
                 ref.invalidate(routesProvider(widget.gtfsFile.id));
-                
+
                 // Force reload of active trips to get updated route colors
                 ref.invalidate(activeTripsProvider);
-                
+
                 // Force map widget to reload shape caches to get updated colors
                 ref.read(shapeCacheVersionProvider.notifier).state++;
-                
+
                 if (mounted) {
                   Navigator.of(context).pop();
                 }
@@ -1069,9 +1166,8 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
                 _SmallIconButton(
                   icon: Icons.directions_bus_outlined,
                   active: showSim,
-                  tooltip: showSim
-                      ? 'Ocultar simulación'
-                      : 'Activar simulación',
+                  tooltip:
+                      showSim ? 'Ocultar simulación' : 'Activar simulación',
                   onTap: () {
                     ref
                         .read(routeSimulationVisibilityProvider.notifier)
@@ -1104,11 +1200,11 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
             },
             borderRadius: BorderRadius.circular(4),
             child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+              padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
               child: Row(
                 children: [
-                  Icon(Icons.add, size: 11,
+                  Icon(Icons.add,
+                      size: 11,
                       color: AppTheme.onSurfaceVariant.withOpacity(0.5)),
                   const SizedBox(width: 4),
                   Text(
@@ -1136,7 +1232,7 @@ class _RouteLayerState extends ConsumerState<_RouteLayer> {
       (r) => r.id == widget.routeId,
       orElse: () => throw Exception('Route not found'),
     );
-    
+
     if (route == null) return;
 
     // Get shapes for this route
@@ -1191,8 +1287,7 @@ class _PatternRow extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
-      padding:
-          const EdgeInsets.only(left: 60, right: 12, top: 1, bottom: 1),
+      padding: const EdgeInsets.only(left: 60, right: 12, top: 1, bottom: 1),
       child: Row(
         children: [
           const Icon(Icons.subdirectory_arrow_right,
@@ -1236,8 +1331,7 @@ class _PatternRow extends ConsumerWidget {
                   builder: (_) => AlertDialog(
                     backgroundColor: const Color(0xFF1E2129),
                     title: const Text('Eliminar trayecto',
-                        style: TextStyle(
-                            color: Colors.white, fontSize: 15)),
+                        style: TextStyle(color: Colors.white, fontSize: 15)),
                     content: Text(
                       '¿Eliminar el trayecto "${pattern.displayName}"?\n\nEsta acción no se puede deshacer.',
                       style: const TextStyle(
@@ -1245,15 +1339,13 @@ class _PatternRow extends ConsumerWidget {
                     ),
                     actions: [
                       TextButton(
-                        onPressed: () =>
-                            Navigator.of(context).pop(false),
+                        onPressed: () => Navigator.of(context).pop(false),
                         child: const Text('Cancelar'),
                       ),
                       FilledButton(
-                        onPressed: () =>
-                            Navigator.of(context).pop(true),
-                        style: FilledButton.styleFrom(
-                            backgroundColor: Colors.red),
+                        onPressed: () => Navigator.of(context).pop(true),
+                        style:
+                            FilledButton.styleFrom(backgroundColor: Colors.red),
                         child: const Text('Eliminar'),
                       ),
                     ],
@@ -1269,8 +1361,7 @@ class _PatternRow extends ConsumerWidget {
               child: Padding(
                 padding: const EdgeInsets.all(3),
                 child: Icon(Icons.close,
-                    size: 12,
-                    color: Colors.redAccent.withOpacity(0.7)),
+                    size: 12, color: Colors.redAccent.withOpacity(0.7)),
               ),
             ),
           ),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -65,6 +67,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final stopsVis = ref.watch(gtfsStopsVisibilityProvider);
     final selectedStop = ref.watch(selectedStopProvider);
     final secondSelectedStop = ref.watch(secondSelectedStopProvider);
+    final movingStop = ref.watch(movingStopProvider);
     final agencyVis = ref.watch(agencyVisibilityProvider);
 
     // Solo observar el dateTime para vehículos
@@ -155,7 +158,11 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         // Route shapes (polylines) — skip the shape being edited
         PolylineLayer(
           polylines: _buildPolylines(
-            gtfsFiles, fileVis, shapeVis, selectedTrip, agencyVis,
+            gtfsFiles,
+            fileVis,
+            shapeVis,
+            selectedTrip,
+            agencyVis,
             excludeShapeId: editState?.shapeId,
           ),
         ),
@@ -217,8 +224,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       ],
     );
 
-    final twoStopsSelected =
-        selectedStop != null && secondSelectedStop != null;
+    final twoStopsSelected = selectedStop != null && secondSelectedStop != null;
 
     // Always wrap in Stack for overlay toolbars and hints
     return Stack(children: [
@@ -240,8 +246,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           left: 0,
           right: 0,
           child: Center(
-            child: _buildTwoStopToolbar(
-                context, selectedStop, secondSelectedStop),
+            child:
+                _buildTwoStopToolbar(context, selectedStop, secondSelectedStop),
           ),
         ),
 
@@ -255,11 +261,13 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
             child: Material(
               color: Colors.transparent,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 decoration: BoxDecoration(
                   color: const Color(0xF01E2129),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.teal.withOpacity(0.7), width: 1.5),
+                  border: Border.all(
+                      color: Colors.teal.withOpacity(0.7), width: 1.5),
                 ),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
                   const Icon(Icons.my_location, size: 14, color: Colors.teal),
@@ -268,8 +276,50 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
                       style: TextStyle(color: Colors.white, fontSize: 12)),
                   const SizedBox(width: 12),
                   InkWell(
-                    onTap: () => ref.read(pickStopLocationProvider.notifier).state = null,
-                    child: const Icon(Icons.close, size: 14, color: Colors.white54),
+                    onTap: () => ref
+                        .read(pickStopLocationProvider.notifier)
+                        .state = null,
+                    child: const Icon(Icons.close,
+                        size: 14, color: Colors.white54),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+        ),
+
+      if (movingStop != null)
+        Positioned(
+          top: ref.watch(pickStopLocationProvider) != null ? 68 : 12,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xF0282114),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.amber.withValues(alpha: 0.75),
+                    width: 1.5,
+                  ),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.open_with, size: 14, color: Colors.amber),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Haz clic para recolocar "${movingStop.displayName}"',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                  const SizedBox(width: 12),
+                  InkWell(
+                    onTap: () =>
+                        ref.read(movingStopProvider.notifier).state = null,
+                    child: const Icon(Icons.close,
+                        size: 14, color: Colors.white54),
                   ),
                 ]),
               ),
@@ -278,7 +328,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         ),
 
       // Create stop FAB (bottom-left)
-      if (editState == null && ref.watch(pickStopLocationProvider) == null)
+      if (editState == null &&
+          ref.watch(pickStopLocationProvider) == null &&
+          movingStop == null)
         Positioned(
           bottom: 56,
           left: 12,
@@ -290,11 +342,13 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
                 onTap: () => activatePickStopMode(context, ref),
                 borderRadius: BorderRadius.circular(10),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xF01E2129),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.teal.withOpacity(0.5), width: 1),
+                    border: Border.all(
+                        color: Colors.teal.withOpacity(0.5), width: 1),
                     boxShadow: [
                       BoxShadow(
                           color: Colors.black.withOpacity(0.4),
@@ -350,7 +404,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           const SizedBox(width: 4),
           Text(
             stopA.displayName,
-            style: const TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+                color: Colors.orange,
+                fontSize: 11,
+                fontWeight: FontWeight.w600),
           ),
           const SizedBox(width: 8),
           const Icon(Icons.add, color: Colors.white38, size: 14),
@@ -359,7 +416,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           const SizedBox(width: 4),
           Text(
             stopB.displayName,
-            style: const TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+                color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.w600),
           ),
           const SizedBox(width: 12),
           Container(width: 1, height: 20, color: Colors.white12),
@@ -371,8 +429,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
             enabled: true,
             color: Colors.teal,
             onTap: () async {
-              final merged = await showMergeStopsDialog(
-                  context, ref, stopA, stopB);
+              final merged =
+                  await showMergeStopsDialog(context, ref, stopA, stopB);
               if (!mounted) return;
               if (merged != null) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -461,25 +519,101 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
                     fontWeight: FontWeight.w600),
               ),
               Text(
-                '${editState.points.length} puntos',
+                editState.activeShapeLabel.isNotEmpty
+                    ? '${editState.activeShapeLabel} · ${editState.points.length} puntos'
+                    : '${editState.points.length} puntos',
                 style: TextStyle(
                     color: Colors.white.withOpacity(0.5), fontSize: 10),
               ),
             ],
           ),
+          if (editState.availableShapes.length > 1) ...[
+            const SizedBox(width: 10),
+            PopupMenuButton<RouteShapeOptionModel>(
+              tooltip: 'Cambiar itinerario/shape',
+              enabled: !isBusy,
+              color: const Color(0xFF1E2129),
+              onSelected: (option) =>
+                  _switchEditedShape(context, editState, option),
+              itemBuilder: (_) => editState.availableShapes
+                  .map(
+                    (option) => PopupMenuItem<RouteShapeOptionModel>(
+                      value: option,
+                      child: Row(
+                        children: [
+                          Icon(
+                            option.shapeId == editState.shapeId
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_off,
+                            size: 14,
+                            color: option.shapeId == editState.shapeId
+                                ? Colors.orange
+                                : Colors.white38,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  option.label,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                Text(
+                                  option.subtitle ?? option.shapeId,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 10,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.06),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.alt_route, size: 14, color: Colors.orange),
+                    SizedBox(width: 4),
+                    Icon(Icons.arrow_drop_down,
+                        size: 16, color: Colors.white70),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(width: 12),
           _ToolbarDivider(),
           const SizedBox(width: 8),
 
           // --- Mode buttons ---
           Tooltip(
-            message: 'Modo normal: arrastra puntos, toca el punto medio para insertar',
+            message:
+                'Modo normal: arrastra puntos, toca el punto medio para insertar',
             child: _ModeBtn(
               icon: Icons.open_with,
               label: 'Mover',
               active: mode == ShapeEditMode.normal,
               color: Colors.orange,
-              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.normal),
+              onTap:
+                  isBusy ? null : () => notifier.setMode(ShapeEditMode.normal),
             ),
           ),
           const SizedBox(width: 4),
@@ -490,29 +624,34 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
               label: 'Borrar',
               active: mode == ShapeEditMode.delete,
               color: Colors.red[300]!,
-              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.delete),
+              onTap:
+                  isBusy ? null : () => notifier.setMode(ShapeEditMode.delete),
             ),
           ),
           const SizedBox(width: 4),
           Tooltip(
-            message: 'Modo añadir al final: toca el mapa para añadir un punto al final',
+            message:
+                'Modo añadir al final: toca el mapa para añadir un punto al final',
             child: _ModeBtn(
               icon: Icons.south_east,
               label: 'Añadir final',
               active: mode == ShapeEditMode.append,
               color: Colors.green[400]!,
-              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.append),
+              onTap:
+                  isBusy ? null : () => notifier.setMode(ShapeEditMode.append),
             ),
           ),
           const SizedBox(width: 4),
           Tooltip(
-            message: 'Modo añadir al inicio: toca el mapa para añadir un punto al principio',
+            message:
+                'Modo añadir al inicio: toca el mapa para añadir un punto al principio',
             child: _ModeBtn(
               icon: Icons.north_west,
               label: 'Añadir inicio',
               active: mode == ShapeEditMode.prepend,
               color: Colors.blue[300]!,
-              onTap: isBusy ? null : () => notifier.setMode(ShapeEditMode.prepend),
+              onTap:
+                  isBusy ? null : () => notifier.setMode(ShapeEditMode.prepend),
             ),
           ),
           const SizedBox(width: 8),
@@ -593,6 +732,86 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     );
   }
 
+  Future<void> _switchEditedShape(
+    BuildContext context,
+    ShapeEditState editState,
+    RouteShapeOptionModel option,
+  ) async {
+    if (option.shapeId == editState.shapeId) return;
+
+    if (editState.hasUnsavedChanges) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E2129),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          title: const Text(
+            'Cambiar de itinerario',
+            style: TextStyle(color: Colors.white, fontSize: 15),
+          ),
+          content: Text(
+            'Hay cambios sin guardar en el shape actual. Si continúas, se perderán.\n\n¿Quieres abrir "${option.label}"?',
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text(
+                'Cancelar',
+                style: TextStyle(color: Colors.white54),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text(
+                'Cambiar',
+                style: TextStyle(color: Colors.orange),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    final ok =
+        await ref.read(shapeEditorProvider.notifier).switchToShape(option);
+    if (!mounted) return;
+
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          backgroundColor: Colors.red[800],
+          content: const Text(
+            'No se pudo cargar el shape seleccionado',
+            style: TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+      return;
+    }
+
+    final newState = ref.read(shapeEditorProvider);
+    if (newState != null) {
+      _centerMapOnPoints(newState.points);
+    }
+  }
+
+  void _centerMapOnPoints(List<LatLng> points) {
+    if (points.isEmpty) return;
+    final mapController = ref.read(mapControllerProvider);
+    final avgLat =
+        points.map((point) => point.latitude).reduce((a, b) => a + b) /
+            points.length;
+    final avgLon =
+        points.map((point) => point.longitude).reduce((a, b) => a + b) /
+            points.length;
+    mapController.move(LatLng(avgLat, avgLon), mapController.camera.zoom);
+  }
+
   Future<void> _showSimplifyDialog(
       BuildContext context, ShapeEditState editState) async {
     double tolerance = 5.0;
@@ -611,8 +830,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
             children: [
               Text(
                 'Puntos actuales: ${editState.points.length}',
-                style: const TextStyle(
-                    color: Colors.white70, fontSize: 13),
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
               ),
               const SizedBox(height: 16),
               Text(
@@ -674,7 +892,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       if (agencyDbId != null && agencyVis.containsKey(agencyDbId)) {
         if (agencyVis[agencyDbId] == false) continue;
       }
-      
+
       if (simVis.isNotEmpty && simVis[trip.routeDbId] != true) continue;
 
       final pos = _getTripPosition(trip, simDateTime);
@@ -824,8 +1042,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         final nextArcLen = arcLengths[prevIndex + 1];
 
         if (nextArcLen >= prevArcLen) {
-          final targetArcLen = prevArcLen + (nextArcLen - prevArcLen) * fraction;
-          return InterpolationHelper.pointAtArcLength(shapePath, cumDist, targetArcLen);
+          final targetArcLen =
+              prevArcLen + (nextArcLen - prevArcLen) * fraction;
+          return InterpolationHelper.pointAtArcLength(
+              shapePath, cumDist, targetArcLen);
         }
       }
     }
@@ -888,8 +1108,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         double minDist = double.infinity;
         for (int i = searchFromIdx; i < shapePath.length; i++) {
           final d = InterpolationHelper.haversineMeters(
-            stop.stopLat, stop.stopLon,
-            shapePath[i].latitude, shapePath[i].longitude,
+            stop.stopLat,
+            stop.stopLon,
+            shapePath[i].latitude,
+            shapePath[i].longitude,
           );
           if (d < minDist) minDist = d;
         }
@@ -901,8 +1123,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         int bestIdx = searchFromIdx;
         for (int i = searchFromIdx; i < shapePath.length; i++) {
           final d = InterpolationHelper.haversineMeters(
-            stop.stopLat, stop.stopLon,
-            shapePath[i].latitude, shapePath[i].longitude,
+            stop.stopLat,
+            stop.stopLon,
+            shapePath[i].latitude,
+            shapePath[i].longitude,
           );
           if (d <= threshold) {
             bestIdx = i;
@@ -969,13 +1193,14 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       setState(() {
         _routesCache[gtfsFileId] = routes;
       });
-      
+
       // Cargar los shape_ids para cada ruta y actualizar el caché
       _loadShapeToRouteMappings(gtfsFileId, routes);
     }
   }
 
-  Future<void> _loadShapeToRouteMappings(int gtfsFileId, List<RouteModel> routes) async {
+  Future<void> _loadShapeToRouteMappings(
+      int gtfsFileId, List<RouteModel> routes) async {
     for (final route in routes) {
       final shapeIds = await GtfsRepository.getShapeIdsByRoute(route.id);
       for (final shapeId in shapeIds) {
@@ -1006,12 +1231,13 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
   /// Returns a color reflecting the headway: green (frequent) → red (infrequent).
   Color _headwayColor(double? minutes) {
-    if (minutes == null) return const Color(0xFF607D8B); // grey – loading/unknown
-    if (minutes < 5) return const Color(0xFF00E676);    // bright green
-    if (minutes < 10) return const Color(0xFFB2FF59);   // lime
-    if (minutes < 20) return const Color(0xFFFFD740);   // amber
-    if (minutes < 40) return const Color(0xFFFF6D00);   // orange
-    return const Color(0xFFFF1744);                     // red – very infrequent
+    if (minutes == null)
+      return const Color(0xFF607D8B); // grey – loading/unknown
+    if (minutes < 5) return const Color(0xFF00E676); // bright green
+    if (minutes < 10) return const Color(0xFFB2FF59); // lime
+    if (minutes < 20) return const Color(0xFFFFD740); // amber
+    if (minutes < 40) return const Color(0xFFFF6D00); // orange
+    return const Color(0xFFFF1744); // red – very infrequent
   }
 
   /// Unique cache key for a corridor.
@@ -1029,10 +1255,11 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       try {
         final services = await ref.read(activeServicesProvider.future);
         final fileIds = ref
-            .read(gtfsFilesProvider)
-            .valueOrNull
-            ?.map((f) => f.id)
-            .toList() ?? [];
+                .read(gtfsFilesProvider)
+                .valueOrNull
+                ?.map((f) => f.id)
+                .toList() ??
+            [];
         final serviceIds = services.map((s) => s.serviceId).toList();
 
         final analysis = await GtfsRepository.analyzeCorredore(
@@ -1168,8 +1395,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final selectedCorredor = ref.watch(selectedDetectedCorredorProvider);
 
     final corridors = (ref.watch(detectedCorridorsProvider).valueOrNull ?? [])
-      .where((c) => c.totalTrips >= minExpeditions)
-      .toList();
+        .where((c) => c.totalTrips >= minExpeditions)
+        .toList();
     if (corridors.isEmpty) return const [];
 
     final polylines = <Polyline>[];
@@ -1177,8 +1404,9 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
     for (var i = 0; i < corridors.length; i++) {
       final cor = corridors[i];
-      final isSelected = selectedCorredor?.stopIds.length == cor.stopIds.length &&
-          selectedCorredor?.stopIds.join(',') == cor.stopIds.join(',');
+      final isSelected =
+          selectedCorredor?.stopIds.length == cor.stopIds.length &&
+              selectedCorredor?.stopIds.join(',') == cor.stopIds.join(',');
 
       // Kick off headway analysis if not yet available
       _ensureCorridorHeadway(cor);
@@ -1220,9 +1448,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
               color: color.withOpacity(isSelected ? 1 : 0.90),
               borderRadius: BorderRadius.circular(7),
               border: Border.all(
-                color: isSelected
-                    ? Colors.white
-                    : Colors.black.withOpacity(0.15),
+                color:
+                    isSelected ? Colors.white : Colors.black.withOpacity(0.15),
                 width: isSelected ? 1.8 : 1,
               ),
               boxShadow: [
@@ -1238,8 +1465,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
               style: TextStyle(
                 color: Colors.black,
                 fontSize: 11,
-                fontWeight:
-                    isSelected ? FontWeight.w900 : FontWeight.bold,
+                fontWeight: isSelected ? FontWeight.w900 : FontWeight.bold,
               ),
             ),
           ),
@@ -1264,14 +1490,17 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final polylines = <Polyline>[];
 
     // Si hay un vehículo seleccionado, solo mostrar su shape
-    if (selectedTrip != null && selectedTrip.shapeId != null && selectedTrip.shapeId!.isNotEmpty) {
+    if (selectedTrip != null &&
+        selectedTrip.shapeId != null &&
+        selectedTrip.shapeId!.isNotEmpty) {
       final shapes = _shapesCache[selectedTrip.gtfsFileId];
       if (shapes != null) {
         final shapePoints = shapes[selectedTrip.shapeId!];
         if (shapePoints != null && shapePoints.isNotEmpty) {
           final route = selectedTrip.route;
-          final routeColor = route != null ? hexToColor(route.routeColor) : AppTheme.primary;
-          
+          final routeColor =
+              route != null ? hexToColor(route.routeColor) : AppTheme.primary;
+
           // Add a dark border for better contrast
           polylines.add(
             Polyline(
@@ -1280,7 +1509,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
               strokeWidth: 6.5,
             ),
           );
-          
+
           // Main line with route color
           polylines.add(
             Polyline(
@@ -1295,10 +1524,10 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     }
 
     // Contar cuántas rutas están visibles
-    final visibleRoutesCount = shapeVis.isEmpty 
-        ? -1  // -1 indica "todas por defecto"
+    final visibleRoutesCount = shapeVis.isEmpty
+        ? -1 // -1 indica "todas por defecto"
         : shapeVis.values.where((v) => v).length;
-    
+
     // Si hay más de una ruta visible, usar color genérico
     final useGenericColor = visibleRoutesCount != 1;
 
@@ -1307,7 +1536,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       // Verificar si el archivo GTFS está visible (por defecto true)
       final isFileVisible = fileVis[file.id] ?? true;
       if (!isFileVisible) continue;
-      
+
       final shapes = _shapesCache[file.id];
       if (shapes == null) continue;
 
@@ -1317,19 +1546,20 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
       for (final entry in shapes.entries) {
         if (entry.value.isEmpty) continue;
-        
+
         final shapeId = entry.key;
 
         // Skip the shape currently being edited (ShapeEditorLayer renders it)
         if (excludeShapeId != null && shapeId == excludeShapeId) continue;
-        
+
         // Buscar la ruta que usa este shape_id
-        final route = routesLoaded ? _findRouteForShapeId(routes, shapeId) : null;
-        
+        final route =
+            routesLoaded ? _findRouteForShapeId(routes, shapeId) : null;
+
         // Determinar si debe mostrarse este shape
         bool shouldShow = false;
         Color routeColor = AppTheme.primary;
-        
+
         if (route != null) {
           // Verificar visibilidad de la agencia
           final agencyDbId = route.agencyDbId;
@@ -1338,17 +1568,16 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
           // Si shapeVis está vacío, mostrar todas las rutas por defecto
           // Si shapeVis tiene valores, solo mostrar las marcadas como true
           shouldShow = shapeVis.isEmpty || (shapeVis[route.id] ?? false);
-          
+
           // Usar color específico solo si hay exactamente una ruta visible
-          routeColor = useGenericColor 
-              ? AppTheme.primary 
-              : hexToColor(route.routeColor);
+          routeColor =
+              useGenericColor ? AppTheme.primary : hexToColor(route.routeColor);
         } else if (shapeVis.isEmpty) {
           // Si no encontramos la ruta y no hay filtros, mostrar con color por defecto
           // Esto incluye el caso donde las rutas aún no se han cargado
           shouldShow = true;
         }
-        
+
         if (shouldShow) {
           _addPolyline(polylines, entry.value, routeColor);
         }
@@ -1358,7 +1587,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     return polylines;
   }
 
-  void _addPolyline(List<Polyline> polylines, List<LatLng> points, Color color) {
+  void _addPolyline(
+      List<Polyline> polylines, List<LatLng> points, Color color) {
     // Add a dark border for better contrast
     polylines.add(
       Polyline(
@@ -1367,7 +1597,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         strokeWidth: 6.5,
       ),
     );
-    
+
     // Main line with color
     polylines.add(
       Polyline(
@@ -1423,7 +1653,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         })
         .map((e) => e.key)
         .toList();
-    
+
     if (visibleRoutes.isNotEmpty) {
       // Mostrar paradas de rutas específicas
       _buildStopMarkersForRoutes(visibleRoutes, selectedStop, markers,
@@ -1435,7 +1665,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         final fileVisibility = ref.read(gtfsFileVisibilityProvider);
         final isFileVisible = fileVisibility[file.id] ?? true;
         if (!isFileVisible) continue;
-        
+
         if (stopsVis[file.id] != true) continue;
         final stops = _stopsCache[file.id] ?? [];
 
@@ -1456,7 +1686,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     StopModel? secondSelectedStop,
   }) {
     final uniqueStops = <int, StopModel>{};
-    
+
     // Cargar paradas de las rutas visibles
     for (final routeId in routeIds) {
       final stops = _routeStopsCache[routeId];
@@ -1471,7 +1701,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         _loadStopsForRoute(routeId);
       }
     }
-    
+
     // Añadir marcadores para las paradas únicas
     for (final stop in uniqueStops.values) {
       _addStopMarker(stop, selectedStop, markers,
@@ -1525,8 +1755,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
               ref.read(patternEditorProvider.notifier).addStop(stop);
               return;
             }
-            final isModifier =
-                HardwareKeyboard.instance.isShiftPressed;
+            final isModifier = HardwareKeyboard.instance.isShiftPressed;
             if (isModifier) {
               // Don't allow selecting the same stop twice
               if (selectedStop?.id == stop.id) return;
@@ -1538,6 +1767,7 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
               ref.read(secondSelectedStopProvider.notifier).state = null;
             }
           },
+          onLongPress: () => _startStopMoveMode(stop),
           child: Container(
             decoration: BoxDecoration(
               color: markerColor,
@@ -1574,6 +1804,12 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       return;
     }
 
+    final movingStop = ref.read(movingStopProvider);
+    if (movingStop != null) {
+      unawaited(_moveStopToLocation(movingStop, pos));
+      return;
+    }
+
     // In shape editor modes, map tap adds/removes points
     final editState = ref.read(shapeEditorProvider);
     if (editState != null) {
@@ -1601,6 +1837,104 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
         ref.read(secondSelectedStopProvider.notifier).state = null;
         ref.read(selectedTripProvider.notifier).state = null;
       }
+    }
+  }
+
+  void _startStopMoveMode(StopModel stop) {
+    ref.read(selectedStopProvider.notifier).state = stop;
+    ref.read(secondSelectedStopProvider.notifier).state = null;
+    ref.read(selectedTripProvider.notifier).state = null;
+    ref.read(movingStopProvider.notifier).state = stop;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        backgroundColor: const Color(0xFF8A5A00),
+        content: Row(
+          children: [
+            const Icon(Icons.open_with, color: Colors.white, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Haz clic en el mapa para mover "${stop.displayName}"',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _moveStopToLocation(StopModel stop, LatLng pos) async {
+    final messenger = ScaffoldMessenger.of(context);
+    ref.read(movingStopProvider.notifier).state = null;
+
+    try {
+      final updatedStop = await GtfsRepository.updateStopLocation(
+        stop.id,
+        pos.latitude,
+        pos.longitude,
+      );
+
+      _stopsCache.remove(stop.gtfsFileId);
+      _routeStopsCache.clear();
+
+      ref.read(selectedStopProvider.notifier).state = updatedStop;
+
+      final secondSelected = ref.read(secondSelectedStopProvider);
+      if (secondSelected?.id == updatedStop.id) {
+        ref.read(secondSelectedStopProvider.notifier).state = updatedStop;
+      }
+
+      ref.read(stopsCacheVersionProvider.notifier).state++;
+
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          backgroundColor: const Color(0xFF0D5C47),
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Parada "${updatedStop.displayName}" movida a '
+                  '${updatedStop.stopLat.toStringAsFixed(6)}, '
+                  '${updatedStop.stopLon.toStringAsFixed(6)}',
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    } catch (error) {
+      ref.read(movingStopProvider.notifier).state = stop;
+
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          backgroundColor: const Color(0xFF7B1010),
+          content: Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'No se pudo mover la parada: $error',
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
     }
   }
 
@@ -1723,17 +2057,15 @@ class _ToolbarBtn extends StatelessWidget {
                 SizedBox(
                   width: 12,
                   height: 12,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 1.5, color: color),
+                  child:
+                      CircularProgressIndicator(strokeWidth: 1.5, color: color),
                 )
               else if (icon != null)
                 Icon(icon, size: 13, color: color),
               const SizedBox(width: 4),
               Text(label,
                   style: TextStyle(
-                      color: color,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600)),
+                      color: color, fontSize: 11, fontWeight: FontWeight.w600)),
             ]),
           ),
         ),
@@ -1780,7 +2112,8 @@ class _ModeBtn extends StatelessWidget {
             ),
           ),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(icon, size: 13, color: active ? color : color.withOpacity(0.6)),
+            Icon(icon,
+                size: 13, color: active ? color : color.withOpacity(0.6)),
             const SizedBox(width: 4),
             Text(
               label,
