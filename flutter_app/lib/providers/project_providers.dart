@@ -382,14 +382,12 @@ class DetectedCorridorsNotifier
   Future<void> detect({
     required List<String> serviceIds,
     required List<int> gtfsFileIds,
-    int minRoutes = 2,
   }) async {
     state = const AsyncLoading();
     try {
       final corridors = await GtfsRepository.detectCorridors(
         gtfsFileIds: gtfsFileIds,
         serviceIds: serviceIds,
-        minRoutes: minRoutes,
       );
       state = AsyncData(corridors);
     } catch (e, st) {
@@ -403,6 +401,10 @@ class DetectedCorridorsNotifier
 /// The currently selected auto-detected corridor (for the analysis view).
 final selectedDetectedCorredorProvider =
     StateProvider<CorredorDetectado?>((ref) => null);
+
+/// UI filter for minimum expeditions in detected corridors.
+/// This must not trigger re-detection; it only filters the already detected set.
+final corredorMinExpeditionsFilterProvider = StateProvider<int>((ref) => 0);
 
 /// Whether corridor polylines are shown on the map.
 final corredorMapVisibleProvider = StateProvider<bool>((ref) => false);

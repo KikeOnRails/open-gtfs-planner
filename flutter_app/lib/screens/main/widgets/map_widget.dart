@@ -26,6 +26,7 @@ class MapWidget extends ConsumerStatefulWidget {
 
 class _MapWidgetState extends ConsumerState<MapWidget> {
   late MapController _mapController;
+  String? _lastFocusedCorridorKey;
   // Cache for shapes: gtfsFileId -> shape_id -> List<LatLng>
   final Map<int, Map<String, List<LatLng>>> _shapesCache = {};
   // Cache of cumulative arc-length distances per shape (for polyline projection)
@@ -72,6 +73,21 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     final activeTripsAsync = ref.watch(activeTripsProvider);
     final simVis = ref.watch(routeSimulationVisibilityProvider);
     final selectedTrip = ref.watch(selectedTripProvider);
+    final selectedCorredor = ref.watch(selectedDetectedCorredorProvider);
+
+    if (selectedCorredor != null) {
+      final selectedKey = _corKey(selectedCorredor);
+      if (_lastFocusedCorridorKey != selectedKey) {
+        _lastFocusedCorridorKey = selectedKey;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ref.read(corredorMapVisibleProvider.notifier).state = true;
+          _focusCorridor(selectedCorredor);
+        });
+      }
+    } else {
+      _lastFocusedCorridorKey = null;
+    }
 
     // Watch stops cache version — when it changes, clear the local stops cache.
     final stopsCacheVersion = ref.watch(stopsCacheVersionProvider);
@@ -1125,13 +1141,35 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
     return best ?? fallback;
   }
 
+  void _focusCorridor(CorredorDetectado cor) {
+    final points = _corridorShapePoints(cor);
+    if (points.isEmpty) return;
+    if (points.length == 1) {
+      _mapController.move(points.first, 16);
+      return;
+    }
+
+    final bounds = LatLngBounds.fromPoints(points);
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: bounds,
+        padding: const EdgeInsets.all(48),
+        maxZoom: 16,
+      ),
+    );
+  }
+
   /// Builds the corridor overlay layers (polylines + headway labels).
   List<Widget> _buildCorridorLayers(WidgetRef ref) {
     final visible = ref.watch(corredorMapVisibleProvider);
     if (!visible) return const [];
 
-    final corridors =
-        ref.watch(detectedCorridorsProvider).valueOrNull ?? [];
+    final minExpeditions = ref.watch(corredorMinExpeditionsFilterProvider);
+    final selectedCorredor = ref.watch(selectedDetectedCorredorProvider);
+
+    final corridors = (ref.watch(detectedCorridorsProvider).valueOrNull ?? [])
+      .where((c) => c.totalTrips >= minExpeditions)
+      .toList();
     if (corridors.isEmpty) return const [];
 
     final polylines = <Polyline>[];
@@ -1139,6 +1177,8 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
     for (var i = 0; i < corridors.length; i++) {
       final cor = corridors[i];
+      final isSelected = selectedCorredor?.stopIds.length == cor.stopIds.length &&
+          selectedCorredor?.stopIds.join(',') == cor.stopIds.join(',');
 
       // Kick off headway analysis if not yet available
       _ensureCorridorHeadway(cor);
@@ -1151,10 +1191,12 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
       // Main corridor polyline
       polylines.add(Polyline(
         points: points,
-        strokeWidth: 5,
-        color: color.withOpacity(0.75),
-        borderColor: Colors.black.withOpacity(0.35),
-        borderStrokeWidth: 1.5,
+        strokeWidth: isSelected ? 7 : 5,
+        color: color.withOpacity(isSelected ? 0.95 : 0.75),
+        borderColor: isSelected
+            ? Colors.white.withOpacity(0.9)
+            : Colors.black.withOpacity(0.35),
+        borderStrokeWidth: isSelected ? 2.5 : 1.5,
       ));
 
       // Headway label at the middle point of the shape
@@ -1165,14 +1207,24 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
 
       markers.add(Marker(
         point: midPoint,
-        width: 80,
-        height: 26,
-        child: IgnorePointer(
+        width: 104,
+        height: 34,
+        child: GestureDetector(
+          onTap: () {
+            ref.read(selectedDetectedCorredorProvider.notifier).state = cor;
+          },
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.90),
-              borderRadius: BorderRadius.circular(6),
+              color: color.withOpacity(isSelected ? 1 : 0.90),
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(
+                color: isSelected
+                    ? Colors.white
+                    : Colors.black.withOpacity(0.15),
+                width: isSelected ? 1.8 : 1,
+              ),
               boxShadow: [
                 BoxShadow(
                     color: Colors.black.withOpacity(0.4),
@@ -1183,10 +1235,11 @@ class _MapWidgetState extends ConsumerState<MapWidget> {
             child: Text(
               label,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 color: Colors.black,
                 fontSize: 11,
-                fontWeight: FontWeight.bold,
+                fontWeight:
+                    isSelected ? FontWeight.w900 : FontWeight.bold,
               ),
             ),
           ),

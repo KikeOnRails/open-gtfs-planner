@@ -20,6 +20,7 @@ class CorredoresPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final detectedAsync = ref.watch(detectedCorridorsProvider);
     final selected = ref.watch(selectedDetectedCorredorProvider);
+    final minExpeditions = ref.watch(corredorMinExpeditionsFilterProvider);
 
     return Column(
       children: [
@@ -32,8 +33,14 @@ class CorredoresPanel extends ConsumerWidget {
               if (selected != null) {
                 return _CorredorAnalysisView(corredor: selected);
               }
-              if (corridors.isEmpty) return _buildPrompt(context);
-              return _CorredoresList(corridors: corridors);
+              final filtered = corridors
+                  .where((c) => c.totalTrips >= minExpeditions)
+                  .toList();
+              if (filtered.isEmpty) {
+                if (corridors.isEmpty) return _buildPrompt(context);
+                return _buildNoMatchesForFilter(context, minExpeditions);
+              }
+              return _CorredoresList(corridors: filtered);
             },
           ),
         ),
@@ -93,6 +100,35 @@ class CorredoresPanel extends ConsumerWidget {
           ),
         ),
       );
+
+  Widget _buildNoMatchesForFilter(BuildContext context, int minExpeditions) => Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.filter_alt_outlined,
+                  size: 44, color: AppTheme.onSurfaceVariant),
+              const SizedBox(height: 12),
+              Text(
+                'Sin corredores para ≥$minExpeditions exp.',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(color: AppTheme.onSurface),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Prueba a bajar el filtro de expediciones para ver más resultados.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      );
 }
 
 // ---------------------------------------------------------------------------
@@ -110,12 +146,13 @@ class _PanelHeader extends ConsumerStatefulWidget {
 }
 
 class _PanelHeaderState extends ConsumerState<_PanelHeader> {
-  int _minRoutes = 2;
-
   @override
   Widget build(BuildContext context) {
     final selected = widget.selected;
     final corridors = widget.detectedAsync.valueOrNull ?? [];
+    final minExpeditions = ref.watch(corredorMinExpeditionsFilterProvider);
+    final filteredCount =
+      corridors.where((c) => c.totalTrips >= minExpeditions).length;
     final isLoading = widget.detectedAsync is AsyncLoading;
 
     return Container(
@@ -167,7 +204,7 @@ class _PanelHeaderState extends ConsumerState<_PanelHeader> {
                                 borderRadius: BorderRadius.circular(10),
                               ),
                               child: Text(
-                                '${corridors.length}',
+                                '$filteredCount',
                                 style: const TextStyle(
                                     fontSize: 11,
                                     color: AppTheme.primary,
@@ -187,48 +224,50 @@ class _PanelHeaderState extends ConsumerState<_PanelHeader> {
               ],
             ],
           ),
-          // Min-routes filter chips — only when results are visible
+          // Min-expeditions filter chips — only when results are visible
           if (selected == null && corridors.isNotEmpty) ...[
             const SizedBox(height: 8),
-            Row(
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 4,
+              runSpacing: 6,
               children: [
-                const Text('Mín. líneas:',
-                    style: TextStyle(
-                        fontSize: 11, color: AppTheme.onSurfaceVariant)),
-                const SizedBox(width: 6),
-                ...List.generate(4, (i) {
-                  final val = i + 2; // 2,3,4,5
-                  final active = _minRoutes == val;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 4),
-                    child: InkWell(
-                      onTap: () {
-                        setState(() => _minRoutes = val);
-                        _runDetection();
-                      },
-                      borderRadius: BorderRadius.circular(4),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: active
-                              ? AppTheme.primary
-                              : AppTheme.surfaceVariant,
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(
-                              color: active
-                                  ? AppTheme.primary
-                                  : const Color(0xFF2E3340)),
-                        ),
-                        child: Text('$val+',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: active
-                                  ? Colors.white
-                                  : AppTheme.onSurfaceVariant,
-                            )),
+                const Padding(
+                  padding: EdgeInsets.only(right: 2),
+                  child: Text('Mín. exps.:',
+                      style: TextStyle(
+                          fontSize: 11, color: AppTheme.onSurfaceVariant)),
+                ),
+                ...[0, 50, 100, 200, 300].map((val) {
+                  final active = minExpeditions == val;
+                  return InkWell(
+                    onTap: () {
+                      ref
+                          .read(corredorMinExpeditionsFilterProvider.notifier)
+                          .state = val;
+                    },
+                    borderRadius: BorderRadius.circular(4),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: active
+                            ? AppTheme.primary
+                            : AppTheme.surfaceVariant,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                            color: active
+                                ? AppTheme.primary
+                                : const Color(0xFF2E3340)),
                       ),
+                      child: Text(val == 0 ? 'Todos' : '$val+',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: active
+                                ? Colors.white
+                                : AppTheme.onSurfaceVariant,
+                          )),
                     ),
                   );
                 }),
@@ -247,7 +286,6 @@ class _PanelHeaderState extends ConsumerState<_PanelHeader> {
     ref.read(detectedCorridorsProvider.notifier).detect(
           serviceIds: serviceIds,
           gtfsFileIds: gtfsFileIds,
-          minRoutes: _minRoutes,
         );
     ref.read(selectedDetectedCorredorProvider.notifier).state = null;
   }
@@ -346,8 +384,10 @@ class _CorredorTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return InkWell(
-      onTap: () =>
-          ref.read(selectedDetectedCorredorProvider.notifier).state = corredor,
+      onTap: () {
+        ref.read(corredorMapVisibleProvider.notifier).state = true;
+        ref.read(selectedDetectedCorredorProvider.notifier).state = corredor;
+      },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         child: Row(
@@ -381,22 +421,21 @@ class _CorredorTile extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 3),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
                     children: [
                       _MetaChip(
                           icon: Icons.route_outlined,
                           label:
                               '${corredor.routeIds.length} línea${corredor.routeIds.length != 1 ? 's' : ''}'),
-                      const SizedBox(width: 8),
                       _MetaChip(
                           icon: Icons.place_outlined,
                           label: '${corredor.stopIds.length} paradas'),
-                      if (corredor.totalTrips > 0) ...[  
-                        const SizedBox(width: 8),
+                      if (corredor.totalTrips > 0)
                         _MetaChip(
                             icon: Icons.directions_bus_outlined,
                             label: '${corredor.totalTrips} exp.'),
-                      ],
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -412,19 +451,26 @@ class _CorredorTile extends ConsumerWidget {
                       } catch (_) {
                         c = AppTheme.primary;
                       }
-                      return Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 5, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: c.withOpacity(0.18),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: c.withOpacity(0.5)),
-                        ),
-                        child: Text(r.displayName,
+                      return ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 92),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: c.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: c.withOpacity(0.5)),
+                          ),
+                          child: Text(
+                            r.displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.bold,
-                                color: c)),
+                                color: c),
+                          ),
+                        ),
                       );
                     }).toList(),
                   ),

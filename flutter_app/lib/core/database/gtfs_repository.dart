@@ -1241,21 +1241,22 @@ class GtfsRepository {
   // Automatic corridor detection
   // -------------------------------------------------------------------------
 
-  /// Detects corridors automatically by:
-  ///  1. Deriving a canonical stop sequence per route (most-stop trip).
-  ///  2. Building a map of consecutive stop-pairs → set of routes.
-  ///  3. Retaining only pairs shared by ≥ [minRoutes].
-  ///  4. Merging adjacent pairs into maximal chains where the route
-  ///     intersection remains ≥ [minRoutes].
+  /// Detects corridors automatically using an expedition-first strategy:
+  ///  1. Load all active trips for the selected services/files.
+  ///  2. Build shared consecutive stop-pairs from ALL trips (not canonical-only).
+  ///  3. Enumerate ALL maximal stop chains whose shared-route support stays >= 2.
+  ///  4. Score each chain by real trip count (expediciones) traversing the chain.
   ///
-  /// Returns a list of [CorredorDetectado], sorted by number of shared routes
-  /// (descending) then chain length (descending).
+  /// Returns [CorredorDetectado] sorted by expeditions (descending), then
+  /// number of shared routes, then corridor length.
   static Future<List<CorredorDetectado>> detectCorridors({
     required List<int> gtfsFileIds,
     required List<String> serviceIds,
-    int minRoutes = 2,
   }) async {
     if (gtfsFileIds.isEmpty || serviceIds.isEmpty) return [];
+
+    // A corridor must be shared by at least two routes.
+    const baseMinRoutes = 2;
 
     final db = await _db;
     final fileIdPH = gtfsFileIds.map((_) => '?').join(',');
@@ -1263,7 +1264,7 @@ class GtfsRepository {
 
     // --- Step 1: find all trips for the active services -------------------------
     final tripRows = await db.rawQuery('''
-      SELECT t.id as trip_id, t.route_db_id, t.direction_id
+      SELECT t.id as trip_id, t.route_db_id
       FROM gtfs_trips t
       WHERE t.gtfs_file_id IN ($fileIdPH)
         AND t.service_id IN ($svcPH)
@@ -1272,83 +1273,61 @@ class GtfsRepository {
     if (tripRows.isEmpty) return [];
 
     final allTripIds = tripRows.map((r) => r['trip_id'] as int).toList();
+    final routeByTrip = {
+      for (final r in tripRows)
+        r['trip_id'] as int: r['route_db_id'] as int,
+    };
     final tripPH = allTripIds.map((_) => '?').join(',');
 
-    // Count stops per trip
-    final countRows = await db.rawQuery('''
-      SELECT trip_db_id, COUNT(*) as cnt
-      FROM gtfs_stop_times
-      WHERE trip_db_id IN ($tripPH)
-      GROUP BY trip_db_id
-    ''', allTripIds);
-
-    final Map<int, int> stopCountByTrip = {
-      for (final r in countRows) r['trip_db_id'] as int: r['cnt'] as int,
-    };
-
-    // --- Step 2: pick canonical trip per route (most stops, direction 0 first)
-    // key: route_db_id  →  canonical trip_id
-    final Map<int, int> canonicalTrip = {};
-    final Map<int, int> canonicalCount = {};
-
-    for (final row in tripRows) {
-      final tripId = row['trip_id'] as int;
-      final routeId = row['route_db_id'] as int;
-      final direction = (row['direction_id'] as int?) ?? 0;
-      final count = stopCountByTrip[tripId] ?? 0;
-
-      final existing = canonicalTrip[routeId];
-      if (existing == null) {
-        canonicalTrip[routeId] = tripId;
-        canonicalCount[routeId] = count;
-      } else {
-        final existingDir = tripRows
-            .firstWhere((r) => r['trip_id'] == existing,
-                orElse: () => {})['direction_id'] as int? ??
-            99;
-        // Prefer direction 0; among same direction prefer more stops.
-        final replace = (direction == 0 && existingDir != 0) ||
-            (direction == existingDir && count > (canonicalCount[routeId] ?? 0));
-        if (replace) {
-          canonicalTrip[routeId] = tripId;
-          canonicalCount[routeId] = count;
-        }
-      }
-    }
-
-    final canonIds = canonicalTrip.values.toSet().toList();
-    if (canonIds.isEmpty) return [];
-
-    final canonPH = canonIds.map((_) => '?').join(',');
-
-    // --- Step 3: load ordered stop sequences for canonical trips ---------------
+    // --- Step 2: load ordered stop sequences for ALL active trips -------------
     final stRows = await db.rawQuery('''
       SELECT trip_db_id, stop_db_id
       FROM gtfs_stop_times
-      WHERE trip_db_id IN ($canonPH)
+      WHERE trip_db_id IN ($tripPH)
       ORDER BY trip_db_id, stop_sequence ASC
-    ''', canonIds);
+    ''', allTripIds);
 
-    // trip_id → route_db_id (reverse map)
-    final Map<int, int> routeByTrip = {
-      for (final e in canonicalTrip.entries) e.value: e.key,
-    };
-
-    // route_db_id → [stop_db_id, ...]  (ordered)
-    final Map<int, List<int>> stopsByRoute = {};
+    final rawTripStops = <int, List<int>>{};
     for (final row in stRows) {
       final tripId = row['trip_db_id'] as int;
-      final routeId = routeByTrip[tripId];
-      if (routeId == null) continue;
-      stopsByRoute.putIfAbsent(routeId, () => []).add(row['stop_db_id'] as int);
+      rawTripStops.putIfAbsent(tripId, () => []).add(row['stop_db_id'] as int);
     }
 
-    // --- Step 4: build consecutive pair → set<routeId> -------------------------
+    // Normalize each trip stop sequence (remove consecutive duplicates).
+    final tripStops = <int, List<int>>{};
+    final stopToTripIds = <int, Set<int>>{};
+
+    for (final entry in rawTripStops.entries) {
+      final tripId = entry.key;
+      final seq = entry.value;
+      if (seq.isEmpty) continue;
+
+      final normalized = <int>[];
+      int? prev;
+      for (final stopId in seq) {
+        if (prev == stopId) continue;
+        normalized.add(stopId);
+        prev = stopId;
+      }
+      if (normalized.length < 2) continue;
+
+      tripStops[tripId] = normalized;
+      for (final stopId in normalized) {
+        stopToTripIds.putIfAbsent(stopId, () => <int>{}).add(tripId);
+      }
+    }
+
+    if (tripStops.isEmpty) return [];
+
+    // --- Step 3: build consecutive pair → set<routeId> from ALL trips ---------
     final Map<(int, int), Set<int>> pairRoutes = {};
-    for (final entry in stopsByRoute.entries) {
-      final routeId = entry.key;
+    for (final entry in tripStops.entries) {
+      final tripId = entry.key;
+      final routeId = routeByTrip[tripId];
+      if (routeId == null) continue;
       final stops = entry.value;
       for (int i = 0; i < stops.length - 1; i++) {
+        if (stops[i] == stops[i + 1]) continue;
         pairRoutes
             .putIfAbsent((stops[i], stops[i + 1]), () => {})
             .add(routeId);
@@ -1357,113 +1336,181 @@ class GtfsRepository {
 
     // Keep only shared pairs
     final sharedPairs = Map.fromEntries(
-      pairRoutes.entries.where((e) => e.value.length >= minRoutes),
+      pairRoutes.entries.where((e) => e.value.length >= baseMinRoutes),
     );
     if (sharedPairs.isEmpty) return [];
 
-    // --- Step 5: build maximal chains -------------------------------------------
-    // Forward adjacency: stop → next stops (in shared pairs only)
-    final Map<int, List<int>> forward = {};
+    // --- Step 4: enumerate all maximal chains (non-greedy DFS) ----------------
+    final Map<int, Set<int>> forward = {};
+    final Map<int, Set<int>> reverse = {};
+
     for (final pair in sharedPairs.keys) {
-      forward.putIfAbsent(pair.$1, () => []).add(pair.$2);
+      forward.putIfAbsent(pair.$1, () => <int>{}).add(pair.$2);
+      reverse.putIfAbsent(pair.$2, () => <int>{}).add(pair.$1);
     }
 
-    // "True starts": first stop of a shared pair that is NOT a destination of any
-    final Set<int> hasPredecessor = {for (final p in sharedPairs.keys) p.$2};
-    final Set<int> trueStarts = {
-      for (final p in sharedPairs.keys)
-        if (!hasPredecessor.contains(p.$1)) p.$1,
-    };
+    bool canExtendBackward(int firstStop, Set<int> routes, Set<int> inPath) {
+      final preds = reverse[firstStop];
+      if (preds == null || preds.isEmpty) return false;
+      for (final pred in preds) {
+        if (inPath.contains(pred)) continue;
+        final edgeRoutes = sharedPairs[(pred, firstStop)];
+        if (edgeRoutes == null) continue;
+        final inter = routes.intersection(edgeRoutes);
+        if (inter.length >= baseMinRoutes) return true;
+      }
+      return false;
+    }
 
-    final Set<(int, int)> usedPairs = {};
-    final List<({List<int> stops, Set<int> routes})> chains = [];
+    final rawChains = <({List<int> stops, Set<int> routes})>[];
+    final seenChains = <String>{};
 
-    void growChain(int start) {
-      final nexts = forward[start];
-      if (nexts == null) return;
-      for (final next in List.of(nexts)) {
-        final seed = (start, next);
-        if (!sharedPairs.containsKey(seed) || usedPairs.contains(seed)) {
-          continue;
+    void dfs(List<int> path, Set<int> routes) {
+      final cur = path.last;
+      final nexts = forward[cur] ?? const <int>{};
+      bool extended = false;
+
+      for (final next in nexts) {
+        if (path.contains(next)) continue; // avoid cycles
+
+        final edgeRoutes = sharedPairs[(cur, next)];
+        if (edgeRoutes == null) continue;
+
+        final inter = routes.intersection(edgeRoutes);
+        if (inter.length < baseMinRoutes) continue;
+
+        extended = true;
+        dfs([...path, next], inter);
+      }
+
+      if (!extended && path.length >= 2) {
+        final inPath = path.toSet();
+        if (canExtendBackward(path.first, routes, inPath)) {
+          return;
         }
-
-        final chain = [start, next];
-        var chainRoutes = Set<int>.from(sharedPairs[seed]!);
-        usedPairs.add(seed);
-
-        // Extend greedily while the route intersection stays ≥ minRoutes
-        var cur = next;
-        while (forward.containsKey(cur)) {
-          bool extended = false;
-          for (final candidate in forward[cur]!) {
-            final p = (cur, candidate);
-            if (!sharedPairs.containsKey(p) || usedPairs.contains(p)) {
-              continue;
-            }
-            final intersection = chainRoutes.intersection(sharedPairs[p]!);
-            if (intersection.length >= minRoutes) {
-              chain.add(candidate);
-              chainRoutes = intersection;
-              usedPairs.add(p);
-              cur = candidate;
-              extended = true;
-              break;
-            }
-          }
-          if (!extended) break;
-        }
-
-        if (chain.length >= 2) {
-          chains.add((stops: chain, routes: chainRoutes));
+        final routeIds = routes.toList()..sort();
+        final key = '${path.join(',')}|${routeIds.join(',')}';
+        if (seenChains.add(key)) {
+          rawChains.add((stops: List<int>.from(path), routes: Set<int>.from(routes)));
         }
       }
     }
 
-    for (final start in trueStarts) {
-      growChain(start);
-    }
-    // Handle any remaining unvisited shared pairs (e.g. in cycles)
-    for (final pair in sharedPairs.keys) {
-      if (!usedPairs.contains(pair)) growChain(pair.$1);
+    for (final entry in sharedPairs.entries) {
+      final pair = entry.key;
+      final routes = entry.value;
+      dfs([pair.$1, pair.$2], Set<int>.from(routes));
     }
 
-    if (chains.isEmpty) return [];
+    if (rawChains.isEmpty) return [];
+
+    // Expand maximal chains into all contiguous subchains so we don't lose
+    // short but high-expedition corridors contained in longer chains.
+    final candidateByStops = <String, List<int>>{};
+    for (final chain in rawChains) {
+      final stops = chain.stops;
+      for (int start = 0; start < stops.length - 1; start++) {
+        for (int end = start + 1; end < stops.length; end++) {
+          final sub = stops.sublist(start, end + 1);
+          if (sub.length < 2) continue;
+          final key = sub.join(',');
+          candidateByStops.putIfAbsent(key, () => sub);
+        }
+      }
+    }
+
+    final candidateChains = candidateByStops.values.toList();
+    if (candidateChains.isEmpty) return [];
+
+    // --- Step 5: evaluate chains by REAL expeditions --------------------------
+    bool tripContainsChain(List<int> tripStops, List<int> chainStops) {
+      if (chainStops.isEmpty) return false;
+      int idx = 0;
+      for (final stopId in tripStops) {
+        if (stopId == chainStops[idx]) {
+          idx++;
+          if (idx == chainStops.length) return true;
+        }
+      }
+      return false;
+    }
+
+    final verifiedByStops = <String, ({List<int> stops, Set<int> routes, int totalTrips})>{};
+    for (final chainStops in candidateChains) {
+      final firstStopId = chainStops.first;
+      final lastStopId = chainStops.last;
+      final firstTrips = stopToTripIds[firstStopId] ?? const <int>{};
+      final lastTrips = stopToTripIds[lastStopId] ?? const <int>{};
+      final candidateTripIds = firstTrips.length <= lastTrips.length
+          ? firstTrips.where(lastTrips.contains).toSet()
+          : lastTrips.where(firstTrips.contains).toSet();
+      if (candidateTripIds.isEmpty) continue;
+
+      final routeIds = <int>{};
+      int totalTrips = 0;
+      for (final tripId in candidateTripIds) {
+        final stops = tripStops[tripId];
+        if (stops == null || stops.length < chainStops.length) continue;
+        if (tripContainsChain(stops, chainStops)) {
+          totalTrips++;
+          final routeId = routeByTrip[tripId];
+          if (routeId != null) routeIds.add(routeId);
+        }
+      }
+
+      if (routeIds.length < baseMinRoutes || totalTrips == 0) continue;
+
+      final stopsKey = chainStops.join(',');
+      final existing = verifiedByStops[stopsKey];
+      final candidate = (
+        stops: chainStops,
+        routes: routeIds,
+        totalTrips: totalTrips,
+      );
+
+      if (existing == null) {
+        verifiedByStops[stopsKey] = candidate;
+      } else {
+        final betterTrips = candidate.totalTrips > existing.totalTrips;
+        final betterRoutes = candidate.routes.length > existing.routes.length;
+        if (betterTrips ||
+            (candidate.totalTrips == existing.totalTrips && betterRoutes)) {
+          verifiedByStops[stopsKey] = candidate;
+        }
+      }
+    }
+
+    final verifiedChains = verifiedByStops.values.toList();
+
+    if (verifiedChains.isEmpty) return [];
 
     // --- Step 6: load stop + route models -------------------------------------
-    final allStopIds =
-        chains.expand((c) => c.stops).toSet().toList();
-    final allRouteIds =
-        chains.expand((c) => c.routes).toSet().toList();
+    final allStopIds = verifiedChains.expand((c) => c.stops).toSet().toList();
+    final allRouteIds = verifiedChains.expand((c) => c.routes).toSet().toList();
 
     final sPH = allStopIds.map((_) => '?').join(',');
     final rPH = allRouteIds.map((_) => '?').join(',');
 
-    final stopModelRows = await db
-        .rawQuery('SELECT * FROM gtfs_stops WHERE id IN ($sPH)', allStopIds);
+    final stopModelRows =
+        await db.rawQuery('SELECT * FROM gtfs_stops WHERE id IN ($sPH)', allStopIds);
     final Map<int, StopModel> stopsById = {
       for (final r in stopModelRows) r['id'] as int: StopModel.fromMap(r),
     };
 
-    final routeModelRows = await db
-        .rawQuery('SELECT * FROM gtfs_routes WHERE id IN ($rPH)', allRouteIds);
+    final routeModelRows =
+        await db.rawQuery('SELECT * FROM gtfs_routes WHERE id IN ($rPH)', allRouteIds);
     final Map<int, RouteModel> routesById = {
       for (final r in routeModelRows) r['id'] as int: RouteModel.fromMap(r),
     };
 
     // --- Step 7: assemble results ---------------------------------------------
-    // Count trips per route (for sorting by total expeditions)
-    final Map<int, int> tripsByRoute = {};
-    for (final row in tripRows) {
-      final routeId = row['route_db_id'] as int;
-      tripsByRoute[routeId] = (tripsByRoute[routeId] ?? 0) + 1;
-    }
-
     final result = <CorredorDetectado>[];
-    for (final chain in chains) {
+    for (final chain in verifiedChains) {
       final stops =
           chain.stops.map((id) => stopsById[id]).whereType<StopModel>().toList();
       if (stops.length < 2) continue;
 
+      final routeIds = chain.routes.toList()..sort();
       final routes = chain.routes
           .map((id) => routesById[id])
           .whereType<RouteModel>()
@@ -1471,25 +1518,70 @@ class GtfsRepository {
         ..sort((a, b) =>
             (a.routeShortName ?? '').compareTo(b.routeShortName ?? ''));
 
-      final chainTrips = chain.routes
-          .fold<int>(0, (sum, rId) => sum + (tripsByRoute[rId] ?? 0));
-
       result.add(CorredorDetectado(
         stopIds: chain.stops,
         stops: stops,
-        routeIds: chain.routes.toList(),
+        routeIds: routeIds,
         routes: routes,
-        totalTrips: chainTrips,
+        totalTrips: chain.totalTrips,
       ));
     }
 
     result.sort((a, b) {
-      final cmp = b.totalTrips.compareTo(a.totalTrips);
-      if (cmp != 0) return cmp;
+      final cmpTrips = b.totalTrips.compareTo(a.totalTrips);
+      if (cmpTrips != 0) return cmpTrips;
+      final cmpRoutes = b.routeIds.length.compareTo(a.routeIds.length);
+      if (cmpRoutes != 0) return cmpRoutes;
       return b.stopIds.length.compareTo(a.stopIds.length);
     });
 
-    return result;
+    // --- Step 8: remove included sub-corridors with identical expeditions ----
+    bool isContiguousSubchain(List<int> longer, List<int> shorter) {
+      if (shorter.length >= longer.length) return false;
+      for (int start = 0; start <= longer.length - shorter.length; start++) {
+        bool matches = true;
+        for (int j = 0; j < shorter.length; j++) {
+          if (longer[start + j] != shorter[j]) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) return true;
+      }
+      return false;
+    }
+
+    bool sameRouteSet(List<int> a, List<int> b) {
+      if (a.length != b.length) return false;
+      for (int i = 0; i < a.length; i++) {
+        if (a[i] != b[i]) return false;
+      }
+      return true;
+    }
+
+    final keep = List<bool>.filled(result.length, true);
+    for (int i = 0; i < result.length; i++) {
+      if (!keep[i]) continue;
+      final sub = result[i];
+      for (int j = 0; j < result.length; j++) {
+        if (i == j || !keep[i]) continue;
+        final sup = result[j];
+
+        if (sup.stopIds.length <= sub.stopIds.length) continue;
+        if (sup.totalTrips != sub.totalTrips) continue;
+        if (!sameRouteSet(sup.routeIds, sub.routeIds)) continue;
+        if (isContiguousSubchain(sup.stopIds, sub.stopIds)) {
+          keep[i] = false;
+        }
+      }
+    }
+
+    final pruned = <CorredorDetectado>[];
+    for (int i = 0; i < result.length; i++) {
+      if (keep[i]) pruned.add(result[i]);
+    }
+
+    return pruned;
   }
 
   /// Analyse how many trips / routes pass through the corridor and compute
@@ -1576,7 +1668,7 @@ class GtfsRepository {
     }
 
     // Step 3: filter trips that visit all corridor stops in order
-    bool _visitedInOrder(List<(int, int)> visited, List<int> required) {
+    bool visitedInOrder(List<(int, int)> visited, List<int> required) {
       int lastSeq = -1;
       for (final stopId in required) {
         final match = visited
@@ -1601,7 +1693,7 @@ class GtfsRepository {
       final tripId = entry.key;
       final info = entry.value;
       final visited = stopsByTrip[tripId] ?? [];
-      if (!_visitedInOrder(visited, corredor.stopIds)) continue;
+      if (!visitedInOrder(visited, corredor.stopIds)) continue;
 
       final routeDbId = info['route_db_id'] as int;
       deparaturesByRoute
