@@ -1,0 +1,35 @@
+{
+    "name": "Open GTFS Planner",
+    "short_name": "GTFS Planner",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#14161A",
+    "theme_color": "#00AF8C",
+    "description": "Simulador de Transporte Público con datos GTFS",
+    "orientation": "any",
+    "prefer_related_applications": false,
+    "icons": [
+        {
+            "src": "icons/Icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}
